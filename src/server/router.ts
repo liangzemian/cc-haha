@@ -10,6 +10,7 @@ import { handleSearchApi } from './api/search.js'
 import { handleAgentsApi } from './api/agents.js'
 import { handleStatusApi } from './api/status.js'
 import { handleConversationsApi } from './api/conversations.js'
+import { handleTeamsApi } from './api/teams.js'
 
 export async function handleApiRequest(req: Request, url: URL): Promise<Response> {
   const path = url.pathname
@@ -53,6 +54,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     case 'status':
       return handleStatusApi(req, url, segments)
+
+    case 'teams':
+      return handleTeamsApi(req, url, segments)
 
     default:
       return Response.json(

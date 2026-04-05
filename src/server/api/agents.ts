@@ -7,11 +7,12 @@
  * PUT    /api/agents/:name  — 更新 Agent
  * DELETE /api/agents/:name  — 删除 Agent
  *
- * GET    /api/tasks         — 获取后台任务列表 (placeholder)
- * GET    /api/tasks/:id     — 获取任务详情 (placeholder)
+ * GET    /api/tasks         — 获取后台任务列表
+ * GET    /api/tasks/:id     — 获取任务详情
  */
 
 import { AgentService } from '../services/agentService.js'
+import { taskService } from '../services/taskService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
 const agentService = new AgentService()
@@ -25,7 +26,7 @@ export async function handleAgentsApi(
     const resource = segments[1] // 'agents' | 'tasks'
 
     if (resource === 'tasks') {
-      return await handleTasksPlaceholder(req, segments)
+      return await handleTasksApi(req, segments)
     }
 
     return await handleAgents(req, segments)
@@ -96,36 +97,34 @@ async function handleAgents(
   )
 }
 
-// ─── Tasks placeholder ──────────────────────────────────────────────────────
+// ─── Tasks API ─────────────────────────────────────────────────────────────
 
-async function handleTasksPlaceholder(
+async function handleTasksApi(
   req: Request,
   segments: string[],
 ): Promise<Response> {
-  const method = req.method
-  const taskId = segments[2]
-
-  if (method !== 'GET') {
+  if (req.method !== 'GET') {
     throw new ApiError(
       405,
-      `Method ${method} not allowed on /api/tasks`,
+      `Method ${req.method} not allowed on /api/tasks`,
       'METHOD_NOT_ALLOWED',
     )
   }
 
-  // GET /api/tasks/:id
+  const taskId = segments[2]
+
   if (taskId) {
-    return Response.json({
-      task: {
-        id: taskId,
-        status: 'pending',
-        message: 'Background tasks are not yet implemented',
-      },
-    })
+    // GET /api/tasks/:id
+    const task = await taskService.getTask(taskId)
+    if (!task) {
+      throw ApiError.notFound(`Task not found: ${taskId}`)
+    }
+    return Response.json({ task })
   }
 
   // GET /api/tasks
-  return Response.json({ tasks: [] })
+  const tasks = await taskService.listTasks()
+  return Response.json({ tasks })
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
