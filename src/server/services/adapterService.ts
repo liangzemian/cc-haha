@@ -84,6 +84,9 @@ class AdapterService {
       if (config.feishu.encryptKey) config.feishu.encryptKey = maskSecret(config.feishu.encryptKey)
       if (config.feishu.verificationToken) config.feishu.verificationToken = maskSecret(config.feishu.verificationToken)
     }
+    if (config.pairing?.code) {
+      config.pairing.code = maskSecret(config.pairing.code)
+    }
     return config
   }
 
@@ -100,12 +103,16 @@ class AdapterService {
       if (isMasked(patch.feishu.encryptKey)) patch.feishu.encryptKey = current.feishu?.encryptKey
       if (isMasked(patch.feishu.verificationToken)) patch.feishu.verificationToken = current.feishu?.verificationToken
     }
+    if (patch.pairing && isMasked(patch.pairing.code ?? undefined)) {
+      patch.pairing.code = current.pairing?.code
+    }
 
     const merged: AdapterFileConfig = {
       ...current,
       ...patch,
       telegram: patch.telegram ? { ...current.telegram, ...patch.telegram } : current.telegram,
       feishu: patch.feishu ? { ...current.feishu, ...patch.feishu } : current.feishu,
+      pairing: patch.pairing !== undefined ? { ...current.pairing, ...patch.pairing } : current.pairing,
     }
 
     await this.writeConfig(merged)
