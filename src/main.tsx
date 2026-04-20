@@ -2723,16 +2723,30 @@ async function run(): Promise<CommanderCommand> {
           }));
         }, configs).catch(err => logForDebugging(`[MCP] ${label} connect error: ${err}`));
       };
-      // Await all MCP configs — print mode is often single-turn, so
-      // "late-connecting servers visible next turn" doesn't help. SDK init
-      // message and turn-1 tool list both need configured MCP tools present.
+      // Await all MCP configs for regular print-mode sessions — they're
+      // often single-turn, so "late-connecting servers visible next turn"
+      // doesn't help. SDK init message and turn-1 tool list should include
+      // configured MCP tools when running plain `claude -p`.
+      //
+      // Desktop/bridge sessions (`--sdk-url`) are different: the user is
+      // waiting on the first visible assistant token, not a fully populated
+      // MCP inventory. Blocking startup on slow or failing MCP servers (for
+      // example a local `chatlog` HTTP endpoint timing out) makes the whole
+      // chat feel frozen before the first word appears. In that mode we still
+      // kick off the connections immediately, but let them settle in the
+      // background so headlessStore picks them up after the session starts.
+      //
       // Zero-server case is free via the early return in connectMcpBatch.
       // Connectors parallelize inside getMcpToolsCommandsAndResources
       // (processBatched with Promise.all). claude.ai is awaited too — its
       // fetch was kicked off early (line ~2558) so only residual time blocks
       // here. --bare skips claude.ai entirely for perf-sensitive scripts.
       profileCheckpoint('before_connectMcp');
-      await connectMcpBatch(regularMcpConfigs, 'regular');
+      if (sdkUrl) {
+        void connectMcpBatch(regularMcpConfigs, 'regular');
+      } else {
+        await connectMcpBatch(regularMcpConfigs, 'regular');
+      }
       profileCheckpoint('after_connectMcp');
       // Dedup: suppress plugin MCP servers that duplicate a claude.ai
       // connector (connector wins), then connect claude.ai servers.

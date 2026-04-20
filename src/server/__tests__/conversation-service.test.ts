@@ -170,4 +170,18 @@ describe('ConversationService', () => {
       expect(args[0]).toContain(path.join('bin', 'claude-haha'))
     }
   })
+
+  test('buildSessionCliArgs enables partial assistant messages for desktop streaming', () => {
+    const service = new ConversationService() as any
+    const args = service.buildSessionCliArgs(
+      '123e4567-e89b-12d3-a456-426614174000',
+      'ws://127.0.0.1:3456/sdk/test-session?token=test-token',
+      false,
+      { permissionMode: 'bypassPermissions' },
+    ) as string[]
+
+    expect(args).toContain('--include-partial-messages')
+    expect(args).toContain('--sdk-url')
+    expect(args).toContain('--replay-user-messages')
+  })
 })

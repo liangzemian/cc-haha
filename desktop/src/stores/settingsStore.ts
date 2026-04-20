@@ -39,7 +39,7 @@ type SettingsStore = {
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   permissionMode: 'default',
   currentModel: null,
-  effortLevel: 'high',
+  effortLevel: 'medium',
   availableModels: [],
   activeProviderName: null,
   locale: getStoredLocale(),

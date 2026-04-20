@@ -64,6 +64,33 @@ export class ConversationStartupError extends Error {
 export class ConversationService {
   private sessions = new Map<string, SessionProcess>()
 
+  private buildSessionCliArgs(
+    sessionId: string,
+    sdkUrl: string,
+    shouldResume: boolean,
+    options?: SessionStartOptions,
+  ): string[] {
+    const dangerousMode = process.env.CLAUDE_DANGEROUS_MODE === '1'
+    return this.resolveCliArgs([
+      '--print',
+      '--verbose',
+      '--sdk-url',
+      sdkUrl,
+      '--enable-auth-status',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      // Desktop chat depends on partial assistant deltas; without this the
+      // server only sees the completed assistant message at turn end.
+      '--include-partial-messages',
+      ...(shouldResume ? ['--resume', sessionId] : ['--session-id', sessionId]),
+      '--replay-user-messages',
+      ...this.getRuntimeArgs(options),
+      ...this.getPermissionArgs(options?.permissionMode, dangerousMode),
+    ])
+  }
+
   async startSession(
     sessionId: string,
     workDir: string,
@@ -88,22 +115,12 @@ export class ConversationService {
       )
     }
 
-    const dangerousMode = process.env.CLAUDE_DANGEROUS_MODE === '1'
-    const args = this.resolveCliArgs([
-      '--print',
-      '--verbose',
-      '--sdk-url',
+    const args = this.buildSessionCliArgs(
+      sessionId,
       sdkUrl,
-      '--enable-auth-status',
-      '--input-format',
-      'stream-json',
-      '--output-format',
-      'stream-json',
-      ...(shouldResume ? ['--resume', sessionId] : ['--session-id', sessionId]),
-      '--replay-user-messages',
-      ...this.getRuntimeArgs(options),
-      ...this.getPermissionArgs(options?.permissionMode, dangerousMode),
-    ])
+      shouldResume,
+      options,
+    )
 
     console.log(
       `[ConversationService] Starting CLI for ${sessionId}, cwd: ${workDir} (process.cwd()=${process.cwd()}, CALLER_DIR will be pinned to workDir)`,
