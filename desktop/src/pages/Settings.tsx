@@ -18,6 +18,9 @@ import { MarkdownRenderer } from '../components/markdown/MarkdownRenderer'
 import { useSkillStore } from '../stores/skillStore'
 import { SkillList } from '../components/skills/SkillList'
 import { SkillDetail } from '../components/skills/SkillDetail'
+import { usePluginStore } from '../stores/pluginStore'
+import { PluginList } from '../components/plugins/PluginList'
+import { PluginDetail } from '../components/plugins/PluginDetail'
 import { ComputerUseSettings } from './ComputerUseSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { ClaudeOfficialLogin } from '../components/settings/ClaudeOfficialLogin'
@@ -47,6 +50,7 @@ export function Settings() {
             <TabButton icon="chat" label={t('settings.tab.adapters')} active={activeTab === 'adapters'} onClick={() => setActiveTab('adapters')} />
             <TabButton icon="smart_toy" label={t('settings.tab.agents')} active={activeTab === 'agents'} onClick={() => setActiveTab('agents')} />
             <TabButton icon="auto_awesome" label={t('settings.tab.skills')} active={activeTab === 'skills'} onClick={() => setActiveTab('skills')} />
+            <TabButton icon="extension" label={t('settings.tab.plugins')} active={activeTab === 'plugins'} onClick={() => setActiveTab('plugins')} />
             <TabButton icon="mouse" label={t('settings.tab.computerUse')} active={activeTab === 'computerUse'} onClick={() => setActiveTab('computerUse')} />
           </div>
           <div className="border-t border-[var(--color-border)]/40 pt-1">
@@ -62,6 +66,7 @@ export function Settings() {
           {activeTab === 'adapters' && <AdapterSettings />}
           {activeTab === 'agents' && <AgentsSettings />}
           {activeTab === 'skills' && <SkillSettings />}
+          {activeTab === 'plugins' && <PluginSettings />}
           {activeTab === 'computerUse' && <ComputerUseSettings />}
           {activeTab === 'about' && <AboutSettings />}
         </div>
@@ -1259,6 +1264,31 @@ function SkillSettings() {
         {t('settings.skills.description')}
       </p>
       <SkillList />
+    </div>
+  )
+}
+
+function PluginSettings() {
+  const selectedPlugin = usePluginStore((s) => s.selectedPlugin)
+  const t = useTranslation()
+
+  if (selectedPlugin) {
+    return (
+      <div className="w-full min-w-0">
+        <PluginDetail />
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-full min-w-0">
+      <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">
+        {t('settings.plugins.title')}
+      </h2>
+      <p className="text-sm text-[var(--color-text-tertiary)] mb-4">
+        {t('settings.plugins.description')}
+      </p>
+      <PluginList />
     </div>
   )
 }
