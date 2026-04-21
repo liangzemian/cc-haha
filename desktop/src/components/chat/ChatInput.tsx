@@ -57,6 +57,7 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
   const chatState = sessionState?.chatState ?? 'idle'
   const slashCommands = sessionState?.slashCommands ?? []
+  const composerPrefill = sessionState?.composerPrefill ?? null
   const activeSession = useSessionStore((state) => activeTabId ? state.sessions.find((session) => session.id === activeTabId) ?? null : null)
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)
@@ -71,6 +72,37 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   useEffect(() => {
     textareaRef.current?.focus()
   }, [isActive])
+
+  useEffect(() => {
+    if (!composerPrefill) return
+
+    setInput(composerPrefill.text)
+    setAttachments(
+      (composerPrefill.attachments ?? [])
+        .filter((attachment) => attachment.type === 'image' || attachment.data)
+        .map((attachment, index) => ({
+          id: `rewind-prefill-${composerPrefill.nonce}-${index}`,
+          name: attachment.name,
+          type: attachment.type,
+          mimeType: attachment.mimeType,
+          previewUrl: attachment.type === 'image' ? attachment.data : undefined,
+          data: attachment.data,
+        })),
+    )
+    setPlusMenuOpen(false)
+    setSlashMenuOpen(false)
+    setFileSearchOpen(false)
+    setSlashFilter('')
+    setAtFilter('')
+    setAtCursorPos(-1)
+
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      el?.focus()
+      const cursor = composerPrefill.text.length
+      el?.setSelectionRange(cursor, cursor)
+    })
+  }, [composerPrefill])
 
   useEffect(() => {
     if (!activeTabId) {

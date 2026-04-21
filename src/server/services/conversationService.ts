@@ -543,6 +543,7 @@ export class ConversationService {
     return {
       ...cleanEnv,
       CLAUDE_CODE_ENABLE_TASKS: '1',
+      CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: '1',
       CALLER_DIR: workDir,
       PWD: workDir,
       ...(sdkUrl

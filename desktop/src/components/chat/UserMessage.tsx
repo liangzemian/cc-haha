@@ -5,9 +5,11 @@ import { MessageActionBar } from './MessageActionBar'
 type Props = {
   content: string
   attachments?: UIAttachment[]
+  onRewind?: () => void
+  rewindLabel?: string
 }
 
-export function UserMessage({ content, attachments }: Props) {
+export function UserMessage({ content, attachments, onRewind, rewindLabel }: Props) {
   const hasText = content.trim().length > 0
 
   return (
@@ -31,6 +33,8 @@ export function UserMessage({ content, attachments }: Props) {
         <MessageActionBar
           copyText={content}
           copyLabel="Copy prompt"
+          onRewind={onRewind}
+          rewindLabel={rewindLabel}
         />
       )}
     </div>

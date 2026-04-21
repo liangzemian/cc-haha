@@ -10,6 +10,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { ApiError } from '../middleware/errorHandler.js'
 import { sanitizePath as sanitizePortablePath } from '../../utils/sessionStoragePortable.js'
+import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 
 // ============================================================================
 // Types
@@ -38,6 +39,11 @@ export type SessionLaunchInfo = {
   customTitle: string | null
 }
 
+export type TrimSessionResult = {
+  removedCount: number
+  removedMessageIds: string[]
+}
+
 export type MessageEntry = {
   id: string
   type: 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result'
@@ -53,6 +59,7 @@ export type MessageEntry = {
 type RawEntry = {
   type?: string
   uuid?: string
+  messageId?: string
   parentUuid?: string | null
   parent_tool_use_id?: string | null
   isSidechain?: boolean
@@ -66,6 +73,11 @@ type RawEntry = {
     type?: string
   }
   timestamp?: string
+  snapshot?: {
+    messageId?: string
+    trackedFileBackups?: Record<string, unknown>
+    timestamp?: string
+  }
   customTitle?: string
   title?: string
   [key: string]: unknown
@@ -798,6 +810,87 @@ export class SessionService {
         timestamp: new Date().toISOString(),
       })
     }
+  }
+
+  async trimSessionMessagesFrom(
+    sessionId: string,
+    startMessageId: string,
+  ): Promise<TrimSessionResult> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) {
+      throw ApiError.notFound(`Session not found: ${sessionId}`)
+    }
+
+    const entries = await this.readJsonlFile(found.filePath)
+    const activeMessages = this.entriesToMessages(entries)
+    const startIndex = activeMessages.findIndex((message) => message.id === startMessageId)
+
+    if (startIndex < 0) {
+      throw ApiError.badRequest(`Message not found in active session chain: ${startMessageId}`)
+    }
+
+    const removedMessageIds = activeMessages
+      .slice(startIndex)
+      .map((message) => message.id)
+
+    if (removedMessageIds.length === 0) {
+      return { removedCount: 0, removedMessageIds: [] }
+    }
+
+    const removedIds = new Set(removedMessageIds)
+    const filteredEntries = entries.filter(
+      (entry) => !(typeof entry.uuid === 'string' && removedIds.has(entry.uuid)),
+    )
+
+    const content =
+      filteredEntries.length > 0
+        ? filteredEntries.map((entry) => JSON.stringify(entry)).join('\n') + '\n'
+        : ''
+    await fs.writeFile(found.filePath, content, 'utf-8')
+
+    return {
+      removedCount: removedMessageIds.length,
+      removedMessageIds,
+    }
+  }
+
+  async getSessionFileHistorySnapshots(
+    sessionId: string,
+  ): Promise<FileHistorySnapshot[]> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) {
+      throw ApiError.notFound(`Session not found: ${sessionId}`)
+    }
+
+    const entries = await this.readJsonlFile(found.filePath)
+    const snapshotsByMessageId = new Map<string, FileHistorySnapshot>()
+
+    for (const entry of entries) {
+      if (entry.type !== 'file-history-snapshot' || !entry.snapshot) continue
+
+      const snapshotMessageId =
+        typeof entry.snapshot.messageId === 'string'
+          ? entry.snapshot.messageId
+          : typeof entry.messageId === 'string'
+            ? entry.messageId
+            : null
+
+      if (!snapshotMessageId) continue
+
+      snapshotsByMessageId.set(snapshotMessageId, {
+        messageId: snapshotMessageId as FileHistorySnapshot['messageId'],
+        trackedFileBackups:
+          entry.snapshot.trackedFileBackups &&
+          typeof entry.snapshot.trackedFileBackups === 'object'
+            ? (entry.snapshot.trackedFileBackups as FileHistorySnapshot['trackedFileBackups'])
+            : {},
+        timestamp: new Date(
+          entry.snapshot.timestamp || entry.timestamp || new Date().toISOString(),
+        ),
+      })
+    }
+
+    return [...snapshotsByMessageId.values()]
   }
 
   // --------------------------------------------------------------------------

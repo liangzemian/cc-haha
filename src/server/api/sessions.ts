@@ -17,6 +17,10 @@ import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { getSlashCommands } from '../ws/handler.js'
 import { getCommandName } from '../../commands.js'
 import { getSkillDirCommands } from '../../skills/loadSkillsDir.js'
+import {
+  executeSessionRewind,
+  previewSessionRewind,
+} from '../services/sessionRewindService.js'
 
 export async function handleSessionsApi(
   req: Request,
@@ -71,6 +75,16 @@ export async function handleSessionsApi(
         )
       }
       return await getGitInfo(sessionId)
+    }
+
+    if (subResource === 'rewind') {
+      if (req.method !== 'POST') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 }
+        )
+      }
+      return await rewindSession(req, sessionId)
     }
 
     if (subResource === 'slash-commands') {
@@ -250,6 +264,25 @@ async function getGitInfo(sessionId: string): Promise<Response> {
       changedFiles: 0,
     })
   }
+}
+
+async function rewindSession(req: Request, sessionId: string): Promise<Response> {
+  let body: { userMessageIndex?: number; dryRun?: boolean }
+  try {
+    body = (await req.json()) as { userMessageIndex?: number; dryRun?: boolean }
+  } catch {
+    throw ApiError.badRequest('Invalid JSON body')
+  }
+
+  if (!Number.isInteger(body.userMessageIndex)) {
+    throw ApiError.badRequest('userMessageIndex (integer) is required')
+  }
+
+  const result = body.dryRun
+    ? await previewSessionRewind(sessionId, body.userMessageIndex)
+    : await executeSessionRewind(sessionId, body.userMessageIndex)
+
+  return Response.json(result)
 }
 
 async function patchSession(req: Request, sessionId: string): Promise<Response> {

@@ -49,6 +49,11 @@ export type PerSessionState = {
   slashCommands: Array<{ name: string; description: string }>
   agentTaskNotifications: Record<string, AgentTaskNotification>
   elapsedTimer: ReturnType<typeof setInterval> | null
+  composerPrefill?: {
+    text: string
+    attachments?: UIAttachment[]
+    nonce: number
+  } | null
 }
 
 const DEFAULT_SESSION_STATE: PerSessionState = {
@@ -68,6 +73,7 @@ const DEFAULT_SESSION_STATE: PerSessionState = {
   slashCommands: [],
   agentTaskNotifications: {},
   elapsedTimer: null,
+  composerPrefill: null,
 }
 
 function createDefaultSessionState(): PerSessionState {
@@ -98,6 +104,11 @@ type ChatStore = {
   setSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void
   stopGeneration: (sessionId: string) => void
   loadHistory: (sessionId: string) => Promise<void>
+  reloadHistory: (sessionId: string) => Promise<void>
+  queueComposerPrefill: (
+    sessionId: string,
+    prefill: { text: string; attachments?: UIAttachment[] },
+  ) => void
   clearMessages: (sessionId: string) => void
   handleServerMessage: (sessionId: string, msg: ServerMessage) => void
 }
@@ -121,6 +132,17 @@ function updateSessionIn(
   const session = sessions[sessionId]
   if (!session) return sessions
   return { ...sessions, [sessionId]: { ...session, ...updater(session) } }
+}
+
+async function fetchAndMapSessionHistory(sessionId: string) {
+  const { messages } = await sessionsApi.getMessages(sessionId)
+  return {
+    rawMessages: messages,
+    uiMessages: mapHistoryMessagesToUiMessages(messages),
+    restoredNotifications: reconstructAgentNotifications(messages),
+    lastTodos: extractLastTodoWriteFromHistory(messages),
+    hasMessagesAfterTaskCompletion: hasUserMessagesAfterTaskCompletion(messages),
+  }
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -354,9 +376,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   loadHistory: async (sessionId) => {
     try {
-      const { messages } = await sessionsApi.getMessages(sessionId)
-      const uiMessages = mapHistoryMessagesToUiMessages(messages)
-      const restoredNotifications = reconstructAgentNotifications(messages)
+      const {
+        uiMessages,
+        restoredNotifications,
+        lastTodos,
+        hasMessagesAfterTaskCompletion,
+      } = await fetchAndMapSessionHistory(sessionId)
       set((state) => {
         const session = state.sessions[sessionId]
         if (!session || session.messages.length > 0) return state
@@ -365,17 +390,74 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           agentTaskNotifications: { ...s.agentTaskNotifications, ...restoredNotifications },
         })) }
       })
-      const lastTodos = extractLastTodoWriteFromHistory(messages)
       if (lastTodos && lastTodos.length > 0) {
         const taskStore = useCLITaskStore.getState()
         if (taskStore.tasks.length === 0) taskStore.setTasksFromTodos(lastTodos)
+      } else {
+        useCLITaskStore.getState().setTasksFromTodos([])
       }
-      if (hasUserMessagesAfterTaskCompletion(messages)) {
+      if (hasMessagesAfterTaskCompletion) {
         useCLITaskStore.getState().markCompletedAndDismissed()
       }
     } catch {
       // Session may not have messages yet
     }
+  },
+
+  reloadHistory: async (sessionId) => {
+    try {
+      const {
+        uiMessages,
+        restoredNotifications,
+        lastTodos,
+        hasMessagesAfterTaskCompletion,
+      } = await fetchAndMapSessionHistory(sessionId)
+
+      set((state) => {
+        const session = state.sessions[sessionId]
+        if (!session) return state
+        if (session.elapsedTimer) clearInterval(session.elapsedTimer)
+        return {
+          sessions: updateSessionIn(state.sessions, sessionId, () => ({
+            messages: uiMessages,
+            agentTaskNotifications: restoredNotifications,
+            chatState: 'idle',
+            activeThinkingId: null,
+            activeToolUseId: null,
+            activeToolName: null,
+            streamingText: '',
+            streamingToolInput: '',
+            pendingPermission: null,
+            pendingComputerUsePermission: null,
+            elapsedTimer: null,
+            statusVerb: '',
+          })),
+        }
+      })
+
+      if (lastTodos && lastTodos.length > 0) {
+        useCLITaskStore.getState().setTasksFromTodos(lastTodos)
+      } else {
+        useCLITaskStore.getState().setTasksFromTodos([])
+      }
+      if (hasMessagesAfterTaskCompletion) {
+        useCLITaskStore.getState().markCompletedAndDismissed()
+      }
+    } catch {
+      // Session may not have messages yet
+    }
+  },
+
+  queueComposerPrefill: (sessionId, prefill) => {
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, () => ({
+        composerPrefill: {
+          text: prefill.text,
+          attachments: prefill.attachments,
+          nonce: Date.now(),
+        },
+      })),
+    }))
   },
 
   clearMessages: (sessionId) => {

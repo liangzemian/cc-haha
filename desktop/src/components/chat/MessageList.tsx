@@ -1,6 +1,10 @@
-import { useRef, useEffect, useMemo, memo } from 'react'
+import { useRef, useEffect, useMemo, memo, useState, useCallback } from 'react'
+import { ApiError } from '../../api/client'
+import { sessionsApi, type SessionRewindResponse } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
+import { useTeamStore } from '../../stores/teamStore'
+import { useUIStore } from '../../stores/uiStore'
 import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n/locales/en'
 import { UserMessage } from './UserMessage'
@@ -14,6 +18,8 @@ import { AskUserQuestion } from './AskUserQuestion'
 import { StreamingIndicator } from './StreamingIndicator'
 import { InlineTaskSummary } from './InlineTaskSummary'
 import type { AgentTaskNotification, UIMessage } from '../../types/chat'
+import { Modal } from '../shared/Modal'
+import { Button } from '../shared/Button'
 
 type ToolCall = Extract<UIMessage, { type: 'tool_use' }>
 type ToolResult = Extract<UIMessage, { type: 'tool_result' }>
@@ -111,21 +117,146 @@ export function buildRenderModel(messages: UIMessage[]): RenderModel {
 export function MessageList() {
   const activeTabId = useTabStore((s) => s.activeTabId)
   const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
+  const stopGeneration = useChatStore((s) => s.stopGeneration)
+  const reloadHistory = useChatStore((s) => s.reloadHistory)
+  const queueComposerPrefill = useChatStore((s) => s.queueComposerPrefill)
+  const isMemberSession = useTeamStore((s) => activeTabId ? Boolean(s.getMemberBySessionId(activeTabId)) : false)
+  const addToast = useUIStore((s) => s.addToast)
   const messages = sessionState?.messages ?? []
   const chatState = sessionState?.chatState ?? 'idle'
   const streamingText = sessionState?.streamingText ?? ''
   const activeThinkingId = sessionState?.activeThinkingId ?? null
   const agentTaskNotifications = sessionState?.agentTaskNotifications ?? {}
   const bottomRef = useRef<HTMLDivElement>(null)
+  const t = useTranslation()
+  const [rewindTarget, setRewindTarget] = useState<{
+    userMessageIndex: number
+    content: string
+    attachments?: Extract<UIMessage, { type: 'user_text' }>['attachments']
+  } | null>(null)
+  const [rewindPreview, setRewindPreview] = useState<SessionRewindResponse | null>(null)
+  const [rewindError, setRewindError] = useState<string | null>(null)
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
+  const [isExecutingRewind, setIsExecutingRewind] = useState(false)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' })
   }, [messages.length, streamingText])
 
+  useEffect(() => {
+    if (!activeTabId || !rewindTarget) return
+
+    let cancelled = false
+    setIsLoadingPreview(true)
+    setRewindPreview(null)
+    setRewindError(null)
+
+    void sessionsApi
+      .rewind(activeTabId, {
+        userMessageIndex: rewindTarget.userMessageIndex,
+        dryRun: true,
+      })
+      .then((preview) => {
+        if (!cancelled) {
+          setRewindPreview(preview)
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return
+        const message =
+          error instanceof ApiError
+            ? typeof error.body === 'object' && error.body && 'message' in error.body
+              ? String((error.body as { message: unknown }).message)
+              : error.message
+            : error instanceof Error
+              ? error.message
+              : String(error)
+        setRewindError(message)
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingPreview(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeTabId, rewindTarget])
+
   const { toolResultMap, childToolCallsByParent, renderItems } = useMemo(
     () => buildRenderModel(messages),
     [messages],
   )
+
+  const closeRewindModal = useCallback(() => {
+    if (isExecutingRewind) return
+    setRewindTarget(null)
+    setRewindPreview(null)
+    setRewindError(null)
+    setIsLoadingPreview(false)
+  }, [isExecutingRewind])
+
+  const handleConfirmRewind = useCallback(async () => {
+    if (!activeTabId || !rewindTarget || isExecutingRewind) return
+
+    setIsExecutingRewind(true)
+    setRewindError(null)
+
+    try {
+      if (chatState !== 'idle') {
+        stopGeneration(activeTabId)
+      }
+
+      const result = await sessionsApi.rewind(activeTabId, {
+        userMessageIndex: rewindTarget.userMessageIndex,
+      })
+
+      await reloadHistory(activeTabId)
+      queueComposerPrefill(activeTabId, {
+        text: rewindTarget.content,
+        attachments: rewindTarget.attachments,
+      })
+
+      addToast({
+        type: 'success',
+        message: result.code.available
+          ? t('chat.rewindSuccessWithCode', {
+              count: result.conversation.messagesRemoved,
+            })
+          : t('chat.rewindSuccessConversationOnly', {
+              count: result.conversation.messagesRemoved,
+            }),
+      })
+
+      setRewindTarget(null)
+      setRewindPreview(null)
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? typeof error.body === 'object' && error.body && 'message' in error.body
+            ? String((error.body as { message: unknown }).message)
+            : error.message
+          : error instanceof Error
+            ? error.message
+            : String(error)
+      setRewindError(message)
+    } finally {
+      setIsExecutingRewind(false)
+    }
+  }, [
+    activeTabId,
+    addToast,
+    chatState,
+    isExecutingRewind,
+    queueComposerPrefill,
+    reloadHistory,
+    rewindTarget,
+    stopGeneration,
+    t,
+  ])
+
+  let visibleUserMessageIndex = -1
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -148,6 +279,10 @@ export function MessageList() {
           }
 
           const msg = item.message
+          const rewindableUserIndex =
+            msg.type === 'user_text' && !msg.pending
+              ? ++visibleUserMessageIndex
+              : null
           return (
             <MessageBlock
               key={msg.id}
@@ -161,6 +296,18 @@ export function MessageList() {
                       return r ? { content: r.content, isError: r.isError } : null
                     })()
                   : null
+              }
+              rewindableUserIndex={rewindableUserIndex}
+              onRequestRewind={
+                !isMemberSession
+                  ? (message, userMessageIndex) => {
+                      setRewindTarget({
+                        userMessageIndex,
+                        content: message.content,
+                        attachments: message.attachments,
+                      })
+                    }
+                  : undefined
               }
             />
           )
@@ -180,6 +327,119 @@ export function MessageList() {
 
         <div ref={bottomRef} />
       </div>
+
+      <Modal
+        open={Boolean(rewindTarget)}
+        onClose={closeRewindModal}
+        title={t('chat.rewindModalTitle')}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={closeRewindModal}
+              disabled={isExecutingRewind}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              onClick={() => {
+                void handleConfirmRewind()
+              }}
+              loading={isExecutingRewind}
+              disabled={isLoadingPreview || Boolean(rewindError)}
+              icon={
+                !isExecutingRewind ? (
+                  <span className="material-symbols-outlined text-[16px]">undo</span>
+                ) : undefined
+              }
+            >
+              {t('chat.rewindConfirm')}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
+              {t('chat.rewindPromptLabel')}
+            </div>
+            <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--color-text-primary)]">
+              {rewindTarget?.content || t('chat.rewindAttachmentOnly')}
+            </div>
+          </div>
+
+          {isLoadingPreview && (
+            <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+              {t('chat.rewindLoading')}
+            </div>
+          )}
+
+          {!isLoadingPreview && rewindPreview && (
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3">
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
+                  <span className="material-symbols-outlined text-[16px] text-[var(--color-brand)]">history</span>
+                  {t('chat.rewindConversationCardTitle')}
+                </div>
+                <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
+                  {t('chat.rewindConversationCardBody', {
+                    count: rewindPreview.conversation.messagesRemoved,
+                  })}
+                </p>
+              </div>
+
+              <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3">
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
+                  <span className="material-symbols-outlined text-[16px] text-[var(--color-brand)]">code</span>
+                  {t('chat.rewindCodeCardTitle')}
+                </div>
+                {rewindPreview.code.available ? (
+                  <div className="space-y-1 text-sm text-[var(--color-text-secondary)]">
+                    <div>{t('chat.rewindCodeFiles', { count: rewindPreview.code.filesChanged.length })}</div>
+                    <div>{t('chat.rewindCodeInsertions', { count: rewindPreview.code.insertions })}</div>
+                    <div>{t('chat.rewindCodeDeletions', { count: rewindPreview.code.deletions })}</div>
+                  </div>
+                ) : (
+                  <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
+                    {rewindPreview.code.reason || t('chat.rewindCodeUnavailable')}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {!isLoadingPreview && rewindPreview?.code.available && rewindPreview.code.filesChanged.length > 0 && (
+            <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
+                {t('chat.rewindFilesLabel')}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {rewindPreview.code.filesChanged.slice(0, 8).map((filePath) => (
+                  <span
+                    key={filePath}
+                    className="rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 text-[11px] text-[var(--color-text-secondary)]"
+                  >
+                    {filePath}
+                  </span>
+                ))}
+                {rewindPreview.code.filesChanged.length > 8 && (
+                  <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1 text-[11px] text-[var(--color-text-secondary)]">
+                    {t('chat.rewindFilesMore', {
+                      count: rewindPreview.code.filesChanged.length - 8,
+                    })}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {rewindError && (
+            <div className="rounded-[var(--radius-lg)] border border-[var(--color-error)]/30 bg-[var(--color-error-container)]/22 px-4 py-3 text-sm text-[var(--color-error)]">
+              {rewindError}
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }
@@ -189,17 +449,35 @@ export const MessageBlock = memo(function MessageBlock({
   activeThinkingId,
   agentTaskNotifications,
   toolResult,
+  rewindableUserIndex,
+  onRequestRewind,
 }: {
   message: UIMessage
   activeThinkingId: string | null
   agentTaskNotifications: Record<string, AgentTaskNotification>
   toolResult?: { content: unknown; isError: boolean } | null
+  rewindableUserIndex?: number | null
+  onRequestRewind?: (
+    message: Extract<UIMessage, { type: 'user_text' }>,
+    userMessageIndex: number,
+  ) => void
 }) {
   const t = useTranslation()
 
   switch (message.type) {
     case 'user_text':
-      return <UserMessage content={message.content} attachments={message.attachments} />
+      return (
+        <UserMessage
+          content={message.content}
+          attachments={message.attachments}
+          onRewind={
+            typeof rewindableUserIndex === 'number' && onRequestRewind
+              ? () => onRequestRewind(message, rewindableUserIndex)
+              : undefined
+          }
+          rewindLabel={t('chat.rewindAction')}
+        />
+      )
     case 'assistant_text':
       return <AssistantMessage content={message.content} />
     case 'thinking':

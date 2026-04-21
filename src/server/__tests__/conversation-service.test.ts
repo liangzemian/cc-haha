@@ -157,6 +157,7 @@ describe('ConversationService', () => {
       'com.claude-code-haha.desktop',
     )
     expect(env.CC_HAHA_DESKTOP_SERVER_URL).toBe('http://127.0.0.1:3456')
+    expect(env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe('1')
   })
 
   test('uses bun entrypoint fallback on Windows dev mode', () => {

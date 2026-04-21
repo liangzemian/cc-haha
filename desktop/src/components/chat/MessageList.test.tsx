@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MessageList, buildRenderModel } from './MessageList'
+import { sessionsApi } from '../../api/sessions'
 import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import type { UIMessage } from '../../types/chat'
@@ -26,12 +27,14 @@ function makeSessionState(overrides: Partial<PerSessionState> = {}): PerSessionS
     slashCommands: [],
     agentTaskNotifications: {},
     elapsedTimer: null,
+    composerPrefill: null,
     ...overrides,
   }
 }
 
 describe('MessageList nested tool calls', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     useTabStore.setState({ activeTabId: ACTIVE_TAB, tabs: [{ sessionId: ACTIVE_TAB, title: 'Test', type: 'session' as const, status: 'idle' }] })
     useChatStore.setState({ sessions: { [ACTIVE_TAB]: makeSessionState() } })
   })
@@ -333,6 +336,52 @@ describe('MessageList nested tool calls', () => {
     expect(writeText).not.toHaveBeenCalledWith(
       '先看 CLI 和服务端入口。\n再看 desktop 前后端边界。'
     )
+  })
+
+  it('opens a rewind preview modal for user messages', async () => {
+    vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
+      target: {
+        userMessageIndex: 0,
+        userMessageCount: 1,
+      },
+      conversation: {
+        messagesRemoved: 2,
+      },
+      code: {
+        available: true,
+        filesChanged: ['src/example.ts'],
+        insertions: 6,
+        deletions: 2,
+      },
+    })
+
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'user-1',
+              type: 'user_text',
+              content: '回到这一步重做',
+              timestamp: 1,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rewind to here' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Rewind Conversation')).toBeTruthy()
+    expect(within(dialog).getByText('回到这一步重做')).toBeTruthy()
+    expect(within(dialog).getByText('src/example.ts')).toBeTruthy()
+    expect(sessionsApi.rewind).toHaveBeenCalledWith(ACTIVE_TAB, {
+      userMessageIndex: 0,
+      dryRun: true,
+    })
   })
 
   it('shows raw startup details under translated CLI startup errors', () => {
