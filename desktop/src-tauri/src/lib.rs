@@ -16,13 +16,6 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
-mod terminal;
-
-use terminal::{
-    terminal_close, terminal_resize, terminal_start_session, terminal_write, stop_all_sessions,
-    TerminalState,
-};
-
 #[derive(Default)]
 struct ServerState(Mutex<ServerStatus>);
 
@@ -121,8 +114,7 @@ fn resolve_app_root(_app: &AppHandle) -> Result<PathBuf, String> {
     // 我们直接用当前可执行文件所在目录作为 app_root：
     //   Dev:  desktop/src-tauri/target/<profile>/  （rust 跑出来的 binary 那一层）
     //   Prod: <App>.app/Contents/MacOS/             （sidecar 二进制的同级目录）
-    let exe = std::env::current_exe()
-        .map_err(|err| format!("resolve current exe path: {err}"))?;
+    let exe = std::env::current_exe().map_err(|err| format!("resolve current exe path: {err}"))?;
     let dir = exe
         .parent()
         .ok_or_else(|| "current exe has no parent dir".to_string())?
@@ -305,26 +297,18 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(ServerState::default())
         .manage(AdapterState::default())
-        .manage(TerminalState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![
-            get_server_url,
-            restart_adapters_sidecar,
-            terminal_start_session,
-            terminal_write,
-            terminal_resize,
-            terminal_close
-        ]);
+        .invoke_handler(tauri::generate_handler![get_server_url, restart_adapters_sidecar]);
 
     // macOS: native menu bar (traffic-light overlay style)
     #[cfg(target_os = "macos")]
     let builder = builder
         .menu(|app| {
-            let about_item = MenuItemBuilder::with_id("nav_about", "关于 Claude Code Haha")
-                .build(app)?;
+            let about_item =
+                MenuItemBuilder::with_id("nav_about", "关于 Claude Code Haha").build(app)?;
             let settings_item = MenuItemBuilder::with_id("nav_settings", "设置...")
                 .accelerator("CmdOrCtrl+,")
                 .build(app)?;
@@ -353,9 +337,7 @@ pub fn run() {
                 .select_all()
                 .build()?;
 
-            let view_submenu = SubmenuBuilder::new(app, "View")
-                .fullscreen()
-                .build()?;
+            let view_submenu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
 
             let window_submenu = SubmenuBuilder::new(app, "Window")
                 .minimize()
@@ -415,9 +397,6 @@ pub fn run() {
         if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
             stop_server_sidecar(app_handle);
             stop_adapters_sidecar(app_handle);
-            if let Some(state) = app_handle.try_state::<TerminalState>() {
-                stop_all_sessions(&state);
-            }
         }
     });
 }
