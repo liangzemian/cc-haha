@@ -102,7 +102,7 @@ export function PluginList() {
   return (
     <div className="flex flex-col gap-6 min-w-0">
       <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] overflow-hidden">
-        <div className="grid gap-4 px-5 py-5 min-w-0 xl:grid-cols-[minmax(0,1.5fr)_minmax(340px,1fr)] xl:items-end">
+        <div className="grid gap-4 px-5 py-5 min-w-0 2xl:grid-cols-[minmax(0,1.45fr)_minmax(420px,0.95fr)] 2xl:items-end">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--color-text-tertiary)] mb-2">
               {t('settings.plugins.browserEyebrow')}
@@ -129,8 +129,8 @@ export function PluginList() {
             )}
           </div>
 
-          <div className="flex flex-col gap-3 min-w-0">
-            <div className="grid grid-cols-2 gap-3 min-w-0 sm:grid-cols-4">
+          <div className="flex flex-col gap-3 min-w-0 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+            <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(120px,1fr))] gap-3">
               <SummaryCard
                 label={t('settings.plugins.summary.total')}
                 value={String(summary?.total ?? plugins.length)}
@@ -152,12 +152,22 @@ export function PluginList() {
                 icon="storefront"
               />
             </div>
-            <div className="flex flex-wrap gap-2 justify-end">
-              <Button variant="secondary" size="sm" onClick={() => void fetchPlugins(currentWorkDir)}>
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="min-h-9 flex-1 sm:flex-none"
+                onClick={() => void fetchPlugins(currentWorkDir)}
+              >
                 <span className="material-symbols-outlined text-[16px]">refresh</span>
                 {t('settings.plugins.refresh')}
               </Button>
-              <Button size="sm" onClick={handleReload} loading={isApplying}>
+              <Button
+                size="sm"
+                className="min-h-9 flex-1 sm:flex-none"
+                onClick={handleReload}
+                loading={isApplying}
+              >
                 <span className="material-symbols-outlined text-[16px]">sync</span>
                 {t('settings.plugins.apply')}
               </Button>
@@ -316,12 +326,14 @@ function SummaryCard({
   icon: string
 }) {
   return (
-    <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3 min-w-0">
-      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] min-w-0">
+    <div className="min-w-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-3 py-3">
+      <div className="flex min-w-0 items-start gap-1.5 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
         <span className="material-symbols-outlined text-[14px] flex-shrink-0">{icon}</span>
-        <span className="truncate">{label}</span>
+        <span className="min-w-0 break-words text-[10px] leading-4 whitespace-normal">
+          {label}
+        </span>
       </div>
-      <div className="mt-2 text-lg font-semibold text-[var(--color-text-primary)] truncate">
+      <div className="mt-2 truncate text-xl font-semibold text-[var(--color-text-primary)]">
         {value}
       </div>
     </div>

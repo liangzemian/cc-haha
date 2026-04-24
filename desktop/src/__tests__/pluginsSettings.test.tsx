@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
@@ -23,8 +23,11 @@ vi.mock('../stores/providerStore', () => ({
   useProviderStore: () => ({
     providers: [],
     activeId: null,
+    presets: [],
     isLoading: false,
+    isPresetsLoading: false,
     fetchProviders: vi.fn(),
+    fetchPresets: vi.fn(),
     deleteProvider: vi.fn(),
     activateProvider: vi.fn(),
     activateOfficial: vi.fn(),
@@ -333,6 +336,59 @@ describe('Settings > Plugins tab', () => {
     expect(screen.getByText('https://api.github.com/mcp')).toBeInTheDocument()
     expect(screen.getByText('Apply changes')).toBeInTheDocument()
     expect(screen.getByText('Uninstall')).toBeInTheDocument()
+  })
+
+  it('keeps plugin detail hook order stable while the selected plugin reloads', () => {
+    usePluginStore.setState({
+      selectedPlugin: {
+        id: 'github@claude-plugins-official',
+        name: 'github',
+        marketplace: 'claude-plugins-official',
+        scope: 'user',
+        enabled: false,
+        hasErrors: false,
+        isBuiltin: false,
+        description: 'GitHub integration',
+        componentCounts: {
+          commands: 1,
+          agents: 0,
+          skills: 0,
+          hooks: 0,
+          mcpServers: 0,
+          lspServers: 0,
+        },
+        capabilities: {
+          commands: ['review-pr'],
+          agents: [],
+          skills: [],
+          hooks: [],
+          mcpServers: [],
+          lspServers: [],
+        },
+        commandEntries: [
+          {
+            name: 'review-pr',
+            description: 'Review the current pull request.',
+          },
+        ],
+        agentEntries: [],
+        hookEntries: [],
+        skillEntries: [],
+        mcpServerEntries: [],
+        errors: [],
+      },
+    })
+
+    const { container } = render(<Settings />)
+    switchToPluginsTab()
+
+    expect(screen.getByText('GitHub integration')).toBeInTheDocument()
+
+    act(() => {
+      usePluginStore.setState({ isDetailLoading: true })
+    })
+
+    expect(container.querySelector('.animate-spin')).toBeInTheDocument()
   })
 
   it('navigates plugin skills into the shared Skills page flow', () => {

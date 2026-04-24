@@ -3,13 +3,13 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { useProviderStore } from '../stores/providerStore'
 import { useTranslation } from '../i18n'
 import { Modal } from '../components/shared/Modal'
+import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import type { PermissionMode, EffortLevel, ThemeMode } from '../types/settings'
 import type { Locale } from '../i18n'
-import { PROVIDER_PRESETS } from '../config/providerPresets'
-import type { ProviderPreset } from '../config/providerPresets'
 import type { SavedProvider, UpdateProviderInput, ProviderTestResult, ModelMapping, ApiFormat } from '../types/provider'
+import type { ProviderPreset } from '../types/providerPreset'
 import { AdapterSettings } from './AdapterSettings'
 import { useAgentStore } from '../stores/agentStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -23,11 +23,11 @@ import { PluginList } from '../components/plugins/PluginList'
 import { PluginDetail } from '../components/plugins/PluginDetail'
 import { ComputerUseSettings } from './ComputerUseSettings'
 import { McpSettings } from './McpSettings'
+import { TerminalSettings } from './TerminalSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { ClaudeOfficialLogin } from '../components/settings/ClaudeOfficialLogin'
 import { useUpdateStore } from '../stores/updateStore'
 import { formatBytes } from '../lib/formatBytes'
-import { InstallCenter } from '../components/settings/InstallCenter'
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('providers')
@@ -50,7 +50,7 @@ export function Settings() {
             <TabButton icon="shield" label={t('settings.tab.permissions')} active={activeTab === 'permissions'} onClick={() => setActiveTab('permissions')} />
             <TabButton icon="tune" label={t('settings.tab.general')} active={activeTab === 'general'} onClick={() => setActiveTab('general')} />
             <TabButton icon="chat" label={t('settings.tab.adapters')} active={activeTab === 'adapters'} onClick={() => setActiveTab('adapters')} />
-            <TabButton icon="download" label={t('settings.tab.install')} active={activeTab === 'install'} onClick={() => setActiveTab('install')} />
+            <TabButton icon="terminal" label={t('settings.tab.terminal')} active={activeTab === 'terminal'} onClick={() => setActiveTab('terminal')} />
             <TabButton icon="dns" label={t('settings.tab.mcp')} active={activeTab === 'mcp'} onClick={() => setActiveTab('mcp')} />
             <TabButton icon="smart_toy" label={t('settings.tab.agents')} active={activeTab === 'agents'} onClick={() => setActiveTab('agents')} />
             <TabButton icon="auto_awesome" label={t('settings.tab.skills')} active={activeTab === 'skills'} onClick={() => setActiveTab('skills')} />
@@ -68,7 +68,7 @@ export function Settings() {
           {activeTab === 'permissions' && <PermissionSettings />}
           {activeTab === 'general' && <GeneralSettings />}
           {activeTab === 'adapters' && <AdapterSettings />}
-          {activeTab === 'install' && <InstallCenter />}
+          {activeTab === 'terminal' && <TerminalSettings />}
           {activeTab === 'mcp' && <McpSettings />}
           {activeTab === 'agents' && <AgentsSettings />}
           {activeTab === 'skills' && <SkillSettings />}
@@ -100,19 +100,53 @@ function TabButton({ icon, label, active, onClick }: { icon: string; label: stri
 // ─── Provider Settings ──────────────────────────────────────
 
 function ProviderSettings() {
-  const { providers, activeId, isLoading, fetchProviders, deleteProvider, activateProvider, activateOfficial, testProvider } = useProviderStore()
+  const {
+    providers,
+    activeId,
+    presets,
+    isLoading,
+    isPresetsLoading,
+    fetchProviders,
+    fetchPresets,
+    deleteProvider,
+    activateProvider,
+    activateOfficial,
+    testProvider,
+  } = useProviderStore()
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const t = useTranslation()
   const [editingProvider, setEditingProvider] = useState<SavedProvider | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [pendingDeleteProvider, setPendingDeleteProvider] = useState<SavedProvider | null>(null)
+  const [isDeletingProvider, setIsDeletingProvider] = useState(false)
   const [testResults, setTestResults] = useState<Record<string, { loading: boolean; result?: ProviderTestResult }>>({})
 
-  useEffect(() => { fetchProviders() }, [fetchProviders])
+  useEffect(() => {
+    void fetchProviders()
+    void fetchPresets()
+  }, [fetchPresets, fetchProviders])
+
+  const presetMap = useMemo(
+    () => new Map(presets.map((preset) => [preset.id, preset])),
+    [presets],
+  )
 
   const handleDelete = async (provider: SavedProvider) => {
     if (activeId === provider.id) return
-    if (!window.confirm(t('settings.providers.confirmDelete', { name: provider.name }))) return
-    await deleteProvider(provider.id).catch(console.error)
+    setPendingDeleteProvider(provider)
+  }
+
+  const confirmDelete = async () => {
+    if (!pendingDeleteProvider) return
+    setIsDeletingProvider(true)
+    try {
+      await deleteProvider(pendingDeleteProvider.id)
+      setPendingDeleteProvider(null)
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setIsDeletingProvider(false)
+    }
   }
 
   const handleTest = async (provider: SavedProvider) => {
@@ -144,7 +178,7 @@ function ProviderSettings() {
           <h2 className="text-base font-semibold text-[var(--color-text-primary)]">{t('settings.providers.title')}</h2>
           <p className="text-sm text-[var(--color-text-tertiary)] mt-0.5">{t('settings.providers.description')}</p>
         </div>
-        <Button size="sm" onClick={() => setShowCreateModal(true)}>
+        <Button size="sm" onClick={() => setShowCreateModal(true)} disabled={isPresetsLoading || presets.length === 0}>
           <span className="material-symbols-outlined text-[16px]">add</span>
           {t('settings.providers.addProvider')}
         </Button>
@@ -167,7 +201,7 @@ function ProviderSettings() {
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.providers.officialName')}</span>
               {isOfficialActive && (
-                <span className="px-1.5 py-0.5 text-[10px] font-bold rounded border border-[var(--color-brand)]/18 bg-[var(--color-brand)]/14 text-[var(--color-brand)] leading-none">{t('common.active')}</span>
+                <span className="px-1.5 py-0.5 text-[10px] font-bold rounded border border-[var(--color-brand)]/18 bg-[var(--color-brand)]/14 text-[var(--color-brand)] leading-none">{t('settings.providers.default')}</span>
               )}
             </div>
             <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5">{t('settings.providers.officialDesc')}</div>
@@ -191,7 +225,7 @@ function ProviderSettings() {
           {providers.map((provider) => {
             const isActive = activeId === provider.id
             const test = testResults[provider.id]
-            const preset = PROVIDER_PRESETS.find((p) => p.id === provider.presetId)
+            const preset = presetMap.get(provider.presetId)
             return (
               <div
                 key={provider.id}
@@ -214,7 +248,7 @@ function ProviderSettings() {
                       </span>
                     )}
                     {isActive && (
-                      <span className="px-1.5 py-0.5 text-[10px] font-bold rounded border border-[var(--color-brand)]/18 bg-[var(--color-brand)]/14 text-[var(--color-brand)] leading-none">{t('common.active')}</span>
+                      <span className="px-1.5 py-0.5 text-[10px] font-bold rounded border border-[var(--color-brand)]/18 bg-[var(--color-brand)]/14 text-[var(--color-brand)] leading-none">{t('settings.providers.default')}</span>
                     )}
                   </div>
                   <div className="text-xs text-[var(--color-text-tertiary)] truncate mt-0.5">
@@ -239,7 +273,7 @@ function ProviderSettings() {
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
                   {!isActive && (
-                    <Button variant="ghost" size="sm" onClick={() => handleActivate(provider.id)}>{t('settings.providers.activate')}</Button>
+                    <Button variant="ghost" size="sm" onClick={() => handleActivate(provider.id)}>{t('settings.providers.setDefault')}</Button>
                   )}
                   <Button variant="ghost" size="sm" onClick={() => handleTest(provider)} loading={test?.loading}>{t('settings.providers.test')}</Button>
                   <Button variant="ghost" size="sm" onClick={() => setEditingProvider(provider)}>{t('settings.providers.edit')}</Button>
@@ -255,13 +289,28 @@ function ProviderSettings() {
 
       {/* Create Modal — conditionally rendered so state resets on close */}
       {showCreateModal && (
-        <ProviderFormModal open={true} onClose={() => setShowCreateModal(false)} mode="create" />
+        <ProviderFormModal open={true} onClose={() => setShowCreateModal(false)} mode="create" presets={presets} />
       )}
 
       {/* Edit Modal */}
       {editingProvider && (
-        <ProviderFormModal key={editingProvider.id} open={true} onClose={() => setEditingProvider(null)} mode="edit" provider={editingProvider} />
+        <ProviderFormModal key={editingProvider.id} open={true} onClose={() => setEditingProvider(null)} mode="edit" provider={editingProvider} presets={presets} />
       )}
+
+      <ConfirmDialog
+        open={pendingDeleteProvider !== null}
+        onClose={() => {
+          if (isDeletingProvider) return
+          setPendingDeleteProvider(null)
+        }}
+        onConfirm={confirmDelete}
+        title={t('common.delete')}
+        body={pendingDeleteProvider ? t('settings.providers.confirmDelete', { name: pendingDeleteProvider.name }) : ''}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        confirmVariant="danger"
+        loading={isDeletingProvider}
+      />
     </div>
   )
 }
@@ -273,6 +322,7 @@ type ProviderFormProps = {
   onClose: () => void
   mode: 'create' | 'edit'
   provider?: SavedProvider
+  presets: ProviderPreset[]
 }
 
 function requirePreset(preset: ProviderPreset | undefined): ProviderPreset {
@@ -282,15 +332,27 @@ function requirePreset(preset: ProviderPreset | undefined): ProviderPreset {
   return preset
 }
 
-function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps) {
+function buildFallbackPreset(provider?: SavedProvider): ProviderPreset {
+  return {
+    id: provider?.presetId ?? 'custom',
+    name: provider?.name ?? 'Custom',
+    baseUrl: provider?.baseUrl ?? '',
+    apiFormat: provider?.apiFormat ?? 'anthropic',
+    defaultModels: provider?.models ?? { main: '', haiku: '', sonnet: '', opus: '' },
+    needsApiKey: true,
+    websiteUrl: '',
+  }
+}
+
+function ProviderFormModal({ open, onClose, mode, provider, presets }: ProviderFormProps) {
   const { createProvider, updateProvider, testConfig } = useProviderStore()
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const t = useTranslation()
 
-  const availablePresets = PROVIDER_PRESETS.filter((p) => p.id !== 'official')
-  const fallbackPreset = requirePreset(
-    availablePresets[availablePresets.length - 1] ?? PROVIDER_PRESETS[0],
-  )
+  const availablePresets = presets.filter((p) => p.id !== 'official')
+  const fallbackPreset = provider
+    ? buildFallbackPreset(provider)
+    : requirePreset(availablePresets[availablePresets.length - 1])
   const initialPreset = requirePreset(
     provider
       ? availablePresets.find((p) => p.id === provider.presetId) ?? fallbackPreset
@@ -318,8 +380,8 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
       jsonPastedRef.current = false
       return
     }
-    import('../api/settings').then(({ settingsApi }) => {
-      settingsApi.getUser().then((settings) => {
+    import('../api/providers').then(({ providersApi }) => {
+      providersApi.getSettings().then((settings) => {
         const needsProxy = apiFormat !== 'anthropic'
         const merged = {
           ...settings,
@@ -358,12 +420,13 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
     if (!canSubmit) return
     setIsSubmitting(true)
     try {
-      // Write the edited settings.json first (for all presets including official)
+      // Write the edited cc-haha settings.json first so provider-specific model
+      // settings never conflict with the user's global ~/.claude/settings.json.
       if (settingsJson.trim()) {
         try {
           const parsed = JSON.parse(settingsJson)
-          const { settingsApi } = await import('../api/settings')
-          await settingsApi.updateUser(parsed)
+          const { providersApi } = await import('../api/providers')
+          await providersApi.updateSettings(parsed)
         } catch {
           // JSON validation already prevents this
         }
@@ -1334,7 +1397,20 @@ function AboutSettings() {
   const initialize = useUpdateStore((s) => s.initialize)
 
   useEffect(() => {
-    import('@tauri-apps/api/app').then((mod) => mod.getVersion()).then(setVersion).catch(() => setVersion('0.1.0'))
+    let cancelled = false
+
+    import('@tauri-apps/api/app')
+      .then((mod) => mod.getVersion())
+      .then((value) => {
+        if (!cancelled) setVersion(value)
+      })
+      .catch(() => {
+        if (!cancelled) setVersion('0.1.0')
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -1377,7 +1453,7 @@ function AboutSettings() {
   return (
     <div className="w-full min-w-0 max-w-lg mx-auto flex flex-col items-center py-6">
       {/* Logo + App Name + Version */}
-      <img src="/app-icon.png" alt="Claude Code Haha" className="w-20 h-20 rounded-2xl shadow-md mb-4" />
+      <img src="/app-icon.png" alt="Claude Code Haha" className="w-20 h-20 mb-4" />
       <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Claude Code Haha</h1>
       {version && (
         <span className="text-xs text-[var(--color-text-tertiary)] mt-1">{t('settings.about.version')} {version}</span>

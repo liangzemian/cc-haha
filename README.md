@@ -1,7 +1,7 @@
 # Claude Code Haha
 
 <p align="center">
-  <img src="docs/images/logo-horizontal.jpg" alt="Claude Code Haha" width="480">
+  <img src="docs/images/app-icon.png" alt="Claude Code Haha" width="240">
 </p>
 
 <div align="center">

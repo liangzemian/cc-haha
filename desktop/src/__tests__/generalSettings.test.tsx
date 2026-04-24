@@ -1,11 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { Settings } from '../pages/Settings'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useUIStore } from '../stores/uiStore'
 import { useUpdateStore } from '../stores/updateStore'
+import type { SavedProvider } from '../types/provider'
+
+const MOCK_DELETE_PROVIDER = vi.fn()
+const providerStoreState = {
+  providers: [] as SavedProvider[],
+  activeId: null,
+  presets: [],
+  isLoading: false,
+  isPresetsLoading: false,
+  fetchProviders: vi.fn(),
+  fetchPresets: vi.fn(),
+  deleteProvider: MOCK_DELETE_PROVIDER,
+  activateProvider: vi.fn(),
+  activateOfficial: vi.fn(),
+  testProvider: vi.fn(),
+  createProvider: vi.fn(),
+  updateProvider: vi.fn(),
+  testConfig: vi.fn(),
+}
 
 vi.mock('../api/agents', () => ({
   agentsApi: {
@@ -14,19 +33,7 @@ vi.mock('../api/agents', () => ({
 }))
 
 vi.mock('../stores/providerStore', () => ({
-  useProviderStore: () => ({
-    providers: [],
-    activeId: null,
-    isLoading: false,
-    fetchProviders: vi.fn(),
-    deleteProvider: vi.fn(),
-    activateProvider: vi.fn(),
-    activateOfficial: vi.fn(),
-    testProvider: vi.fn(),
-    createProvider: vi.fn(),
-    updateProvider: vi.fn(),
-    testConfig: vi.fn(),
-  }),
+  useProviderStore: () => providerStoreState,
 }))
 
 vi.mock('../pages/AdapterSettings', () => ({
@@ -64,6 +71,21 @@ vi.mock('../components/chat/CodeViewer', () => ({
 
 describe('Settings > General tab', () => {
   beforeEach(() => {
+    MOCK_DELETE_PROVIDER.mockReset()
+    providerStoreState.providers = []
+    providerStoreState.activeId = null
+    providerStoreState.presets = []
+    providerStoreState.isLoading = false
+    providerStoreState.isPresetsLoading = false
+    providerStoreState.fetchProviders = vi.fn()
+    providerStoreState.fetchPresets = vi.fn()
+    providerStoreState.activateProvider = vi.fn()
+    providerStoreState.activateOfficial = vi.fn()
+    providerStoreState.testProvider = vi.fn()
+    providerStoreState.createProvider = vi.fn()
+    providerStoreState.updateProvider = vi.fn()
+    providerStoreState.testConfig = vi.fn()
+
     useSettingsStore.setState({
       locale: 'en',
       skipWebFetchPreflight: true,
@@ -108,6 +130,53 @@ describe('Settings > General tab', () => {
     fireEvent.click(toggle)
 
     expect(useSettingsStore.getState().setSkipWebFetchPreflight).toHaveBeenCalledWith(false)
+  })
+
+  it('keeps extension tabs available alongside the terminal tab', () => {
+    render(<Settings />)
+
+    expect(screen.queryByText('Install')).not.toBeInTheDocument()
+    expect(screen.getByText('Terminal')).toBeInTheDocument()
+    expect(screen.getByText('MCP')).toBeInTheDocument()
+    expect(screen.getByText('Plugins')).toBeInTheDocument()
+  })
+})
+
+describe('Settings > Providers tab', () => {
+  beforeEach(() => {
+    MOCK_DELETE_PROVIDER.mockReset()
+    providerStoreState.providers = [
+      {
+        id: 'provider-1',
+        name: 'MiniMax-M2.7-highspeed(openai)',
+        presetId: 'custom',
+        apiKey: '***',
+        baseUrl: 'https://api.minimaxi.com',
+        apiFormat: 'openai_chat',
+        models: {
+          main: 'MiniMax-M2.7-highspeed',
+          haiku: '',
+          sonnet: '',
+          opus: '',
+        },
+        notes: '',
+      },
+    ]
+  })
+
+  it('requires confirmation before deleting a provider', async () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getAllByText('Delete')[0]!)
+
+    expect(MOCK_DELETE_PROVIDER).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByText('Delete provider "MiniMax-M2.7-highspeed(openai)"? This cannot be undone.')).toBeInTheDocument()
+
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }))
+
+    expect(MOCK_DELETE_PROVIDER).toHaveBeenCalledWith('provider-1')
   })
 })
 

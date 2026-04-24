@@ -5,7 +5,6 @@ import {
 import {
   clearServerCache,
   connectToServer,
-  getMcpServerConnectionBatchSize,
   reconnectMcpServerImpl,
 } from '../../services/mcp/client.js'
 import {
@@ -16,6 +15,7 @@ import {
   removeMcpConfig,
   setMcpServerEnabled,
 } from '../../services/mcp/config.js'
+import { inspectMcpHostCommand } from '../services/mcpHostPreflight.js'
 import type {
   ConfigScope,
   McpHTTPServerConfig,
@@ -55,7 +55,7 @@ type McpServerDto = {
   scope: string
   transport: string
   enabled: boolean
-  status: 'connected' | 'needs-auth' | 'failed' | 'disabled'
+  status: 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'checking'
   statusLabel: string
   statusDetail?: string
   configLocation: string
@@ -153,8 +153,56 @@ function getStatusLabel(status: McpServerDto['status']): string {
       return 'Unavailable'
     case 'disabled':
       return 'Disabled'
+    case 'checking':
+      return 'Checking'
     default:
       return status
+  }
+}
+
+function getInitialStatus(
+  enabled: boolean,
+): Pick<McpServerDto, 'status' | 'statusDetail' | 'statusLabel'> {
+  if (!enabled) {
+    return {
+      status: 'disabled',
+      statusLabel: getStatusLabel('disabled'),
+      statusDetail: 'Server disabled for the current project',
+    }
+  }
+
+  return {
+    status: 'checking',
+    statusLabel: getStatusLabel('checking'),
+  }
+}
+
+async function getHostPreflightStatus(
+  config: ScopedMcpServerConfig | McpServerConfig,
+  enabled: boolean,
+): Promise<Pick<McpServerDto, 'status' | 'statusDetail' | 'statusLabel'> | null> {
+  if (!enabled) {
+    return null
+  }
+
+  if ((config.type ?? 'stdio') !== 'stdio') {
+    return null
+  }
+
+  const stdioConfig = config as McpStdioServerConfig
+  const result = await inspectMcpHostCommand(
+    stdioConfig.command,
+    getCwd(),
+    stdioConfig.env,
+  )
+  if (result.ok) {
+    return null
+  }
+
+  return {
+    status: 'failed',
+    statusLabel: getStatusLabel('failed'),
+    statusDetail: result.message,
   }
 }
 
@@ -169,6 +217,11 @@ async function inspectServerStatus(
       statusLabel: getStatusLabel('disabled'),
       statusDetail: 'Server disabled for the current project',
     }
+  }
+
+  const hostPreflightStatus = await getHostPreflightStatus(config, enabled)
+  if (hostPreflightStatus) {
+    return hostPreflightStatus
   }
 
   try {
@@ -197,12 +250,12 @@ async function inspectServerStatus(
   }
 }
 
-async function serializeServer(
+function buildServerDto(
   name: string,
   config: ScopedMcpServerConfig,
-): Promise<McpServerDto> {
+  status: Pick<McpServerDto, 'status' | 'statusDetail' | 'statusLabel'>,
+): McpServerDto {
   const enabled = !isMcpServerDisabled(name)
-  const status = await inspectServerStatus(name, config, enabled)
   const transport = config.type ?? 'stdio'
   const canEdit = EDITABLE_SCOPES.has(config.scope) && (transport === 'stdio' || transport === 'http' || transport === 'sse')
 
@@ -210,7 +263,7 @@ async function serializeServer(
     name,
     scope: config.scope,
     transport,
-    enabled,
+    enabled: !isMcpServerDisabled(name),
     status: status.status,
     statusLabel: status.statusLabel,
     statusDetail: status.statusDetail,
@@ -222,6 +275,34 @@ async function serializeServer(
     canToggle: true,
     config: serializeEditableConfig(config),
   }
+}
+
+function serializeServerSnapshot(
+  name: string,
+  config: ScopedMcpServerConfig,
+): McpServerDto {
+  return buildServerDto(name, config, getInitialStatus(!isMcpServerDisabled(name)))
+}
+
+async function serializeServerWithLiveStatus(
+  name: string,
+  config: ScopedMcpServerConfig,
+): Promise<McpServerDto> {
+  const enabled = !isMcpServerDisabled(name)
+  const status = await inspectServerStatus(name, config, enabled)
+  return buildServerDto(name, config, status)
+}
+
+async function resolveServerForRuntimeAction(
+  name: string,
+): Promise<ScopedMcpServerConfig | null> {
+  const configured = getMcpConfigByName(name)
+  if (configured) {
+    return configured
+  }
+
+  const { servers } = await getClaudeCodeMcpConfigs()
+  return servers[name] ?? null
 }
 
 function buildServerConfig(config: unknown): McpServerConfig {
@@ -309,19 +390,27 @@ async function listServers(): Promise<Response> {
   const visibleServers = Object.entries(servers)
     .filter(([name, config]) => isVisibleServer(name, config))
     .sort((a, b) => a[0].localeCompare(b[0]))
+  return Response.json({
+    servers: visibleServers.map(([name, config]) => serializeServerSnapshot(name, config)),
+  })
+}
 
-  const concurrency = Math.max(1, getMcpServerConnectionBatchSize())
-  const items: McpServerDto[] = []
-
-  for (let index = 0; index < visibleServers.length; index += concurrency) {
-    const chunk = visibleServers.slice(index, index + concurrency)
-    const chunkItems = await Promise.all(
-      chunk.map(([name, config]) => serializeServer(name, config)),
-    )
-    items.push(...chunkItems)
+async function getServerStatus(name: string): Promise<Response> {
+  const existing = await resolveServerForRuntimeAction(name)
+  if (!existing) {
+    throw ApiError.notFound(`MCP server not found: ${name}`)
   }
 
-  return Response.json({ servers: items })
+  return Response.json({
+    server: await serializeServerWithLiveStatus(name, existing),
+  })
+}
+
+async function assertHostPrerequisites(config: McpServerConfig) {
+  const hostPreflightStatus = await getHostPreflightStatus(config, true)
+  if (hostPreflightStatus?.statusDetail) {
+    throw ApiError.badRequest(hostPreflightStatus.statusDetail)
+  }
 }
 
 async function createServer(body: Record<string, unknown>): Promise<Response> {
@@ -332,6 +421,7 @@ async function createServer(body: Record<string, unknown>): Promise<Response> {
 
   const scope = ensureConfigScope(typeof body.scope === 'string' ? body.scope : undefined)
   const config = buildServerConfig(body.config)
+  await assertHostPrerequisites(config)
 
   try {
     await addMcpConfig(name, config, scope)
@@ -348,7 +438,7 @@ async function createServer(body: Record<string, unknown>): Promise<Response> {
     throw ApiError.internal(`Created MCP server "${name}" could not be reloaded`)
   }
 
-  return Response.json({ server: await serializeServer(name, created) }, { status: 201 })
+  return Response.json({ server: serializeServerSnapshot(name, created) }, { status: 201 })
 }
 
 async function updateServer(name: string, body: Record<string, unknown>): Promise<Response> {
@@ -363,6 +453,7 @@ async function updateServer(name: string, body: Record<string, unknown>): Promis
 
   const nextScope = ensureConfigScope(typeof body.scope === 'string' ? body.scope : existing.scope)
   const nextConfig = buildServerConfig(body.config)
+  await assertHostPrerequisites(nextConfig)
   const previousConfig = stripScope(existing)
   const previousScope = existing.scope
 
@@ -391,7 +482,7 @@ async function updateServer(name: string, body: Record<string, unknown>): Promis
     throw ApiError.internal(`Updated MCP server "${name}" could not be reloaded`)
   }
 
-  return Response.json({ server: await serializeServer(name, updated) })
+  return Response.json({ server: serializeServerSnapshot(name, updated) })
 }
 
 async function deleteServer(name: string, url: URL): Promise<Response> {
@@ -409,7 +500,7 @@ async function deleteServer(name: string, url: URL): Promise<Response> {
 }
 
 async function toggleServer(name: string): Promise<Response> {
-  const existing = getMcpConfigByName(name)
+  const existing = await resolveServerForRuntimeAction(name)
   if (!existing) {
     throw ApiError.notFound(`MCP server not found: ${name}`)
   }
@@ -419,14 +510,22 @@ async function toggleServer(name: string): Promise<Response> {
 
   if (!enabled) {
     await clearServerCache(name, existing).catch(() => {})
-    const updated = await serializeServer(name, existing)
+    const updated = serializeServerSnapshot(name, existing)
     return Response.json({ server: updated })
+  }
+
+  const hostPreflightStatus = await getHostPreflightStatus(existing, true)
+  if (hostPreflightStatus) {
+    await clearServerCache(name, existing).catch(() => {})
+    return Response.json({
+      server: buildServerDto(name, existing, hostPreflightStatus),
+    })
   }
 
   const result = await reconnectMcpServerImpl(name, existing)
   await clearServerCache(name, existing).catch(() => {})
 
-  const updated = await serializeServer(name, existing)
+  const updated = await serializeServerWithLiveStatus(name, existing)
   const statusDetail =
     result.client.type === 'failed' && 'error' in result.client ? result.client.error : undefined
 
@@ -439,15 +538,23 @@ async function toggleServer(name: string): Promise<Response> {
 }
 
 async function reconnectServer(name: string): Promise<Response> {
-  const existing = getMcpConfigByName(name)
+  const existing = await resolveServerForRuntimeAction(name)
   if (!existing) {
     throw ApiError.notFound(`MCP server not found: ${name}`)
+  }
+
+  const hostPreflightStatus = await getHostPreflightStatus(existing, !isMcpServerDisabled(name))
+  if (hostPreflightStatus) {
+    await clearServerCache(name, existing).catch(() => {})
+    return Response.json({
+      server: buildServerDto(name, existing, hostPreflightStatus),
+    })
   }
 
   const result = await reconnectMcpServerImpl(name, existing)
   await clearServerCache(name, existing).catch(() => {})
 
-  const server = await serializeServer(name, existing)
+  const server = await serializeServerWithLiveStatus(name, existing)
   const statusDetail =
     result.client.type === 'failed' && 'error' in result.client ? result.client.error : undefined
 
@@ -477,6 +584,10 @@ export async function handleMcpApi(
     return await runWithCwdOverride(resolveRequestCwd(url, body), async () => {
       if (req.method === 'GET' && !serverName) {
         return listServers()
+      }
+
+      if (req.method === 'GET' && serverName && action === 'status') {
+        return getServerStatus(serverName)
       }
 
       if (req.method === 'POST' && !serverName) {

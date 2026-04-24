@@ -7,6 +7,11 @@ export const mcpApi = {
     return api.get<{ servers: McpServerRecord[] }>(`/api/mcp${query}`)
   },
 
+  status: (name: string, cwd?: string) => {
+    const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
+    return api.get<{ server: McpServerRecord }>(`/api/mcp/${encodeURIComponent(name)}/status${query}`)
+  },
+
   create: (name: string, payload: McpUpsertPayload, cwd?: string) => {
     return api.post<{ server: McpServerRecord }>('/api/mcp', {
       name,
@@ -36,4 +41,3 @@ export const mcpApi = {
     return api.post<{ server: McpServerRecord }>(`/api/mcp/${encodeURIComponent(name)}/reconnect`, cwd ? { cwd } : {})
   },
 }
-

@@ -338,6 +338,79 @@ describe('MessageList nested tool calls', () => {
     )
   })
 
+  it('keeps user actions anchored to the right bubble and assistant actions to the left bubble', () => {
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'user-1',
+              type: 'user_text',
+              content: '请把这条 prompt 放在右侧',
+              timestamp: 1,
+            },
+            {
+              id: 'assistant-1',
+              type: 'assistant_text',
+              content: '这条回复应该停在左侧。',
+              timestamp: 2,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    const userShell = screen.getByText('请把这条 prompt 放在右侧').closest('[data-message-shell="user"]')
+    const assistantShell = screen.getByText('这条回复应该停在左侧。').closest('[data-message-shell="assistant"]')
+    const userActions = screen.getByRole('button', { name: 'Copy prompt' }).closest('[data-message-actions]')
+    const assistantActions = screen.getByRole('button', { name: 'Copy reply' }).closest('[data-message-actions]')
+
+    expect(userShell).toBeTruthy()
+    expect(userShell?.className).toContain('items-end')
+    expect(assistantShell).toBeTruthy()
+    expect(assistantShell?.className).toContain('items-start')
+    expect(assistantShell?.className).not.toContain('ml-10')
+    expect(userActions?.getAttribute('data-align')).toBe('end')
+    expect(assistantActions?.getAttribute('data-align')).toBe('start')
+  })
+
+  it('uses the document column for markdown-heavy assistant replies', () => {
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'assistant-doc',
+              type: 'assistant_text',
+              content: [
+                '## 交付结果',
+                '',
+                '已完成以下内容：',
+                '',
+                '- 添加任务',
+                '- 删除任务',
+                '',
+                '```bash',
+                'npm run build',
+                '```',
+              ].join('\n'),
+              timestamp: 1,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    const assistantShell = screen.getByText('交付结果').closest('[data-message-shell="assistant"]')
+    expect(assistantShell?.getAttribute('data-layout')).toBe('document')
+    expect(assistantShell?.className).toContain('w-full')
+    expect(assistantShell?.className).not.toContain('ml-10')
+  })
+
   it('opens a rewind preview modal for user messages', async () => {
     vi.spyOn(sessionsApi, 'rewind').mockResolvedValue({
       target: {

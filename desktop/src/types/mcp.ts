@@ -24,7 +24,7 @@ export type McpServerRecord = {
   scope: string
   transport: string
   enabled: boolean
-  status: 'connected' | 'needs-auth' | 'failed' | 'disabled'
+  status: 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'checking'
   statusLabel: string
   statusDetail?: string
   configLocation: string

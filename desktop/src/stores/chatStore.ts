@@ -4,11 +4,13 @@ import { sessionsApi } from '../api/sessions'
 import { useTeamStore } from './teamStore'
 import { useSessionStore } from './sessionStore'
 import { useCLITaskStore } from './cliTaskStore'
+import { useSessionRuntimeStore } from './sessionRuntimeStore'
 import { useTabStore } from './tabStore'
 import { randomSpinnerVerb } from '../config/spinnerVerbs'
 import { AGENT_LIFECYCLE_TYPES } from '../types/team'
 import type { MessageEntry } from '../types/session'
 import type { PermissionMode } from '../types/settings'
+import type { RuntimeSelection } from '../types/runtime'
 import type {
   AgentTaskNotification,
   AttachmentRef,
@@ -106,6 +108,7 @@ type ChatStore = {
     requestId: string,
     response: ComputerUsePermissionResponse,
   ) => void
+  setSessionRuntime: (sessionId: string, selection: RuntimeSelection) => void
   setSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void
   stopGeneration: (sessionId: string) => void
   loadHistory: (sessionId: string) => Promise<void>
@@ -127,6 +130,46 @@ const nextId = () => `msg-${++msgCounter}-${Date.now()}`
 // Streaming throttle for content_delta
 let pendingDelta = ''
 let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+function consumePendingDelta(): string {
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  const text = pendingDelta
+  pendingDelta = ''
+  return text
+}
+
+function appendAssistantTextMessage(
+  messages: UIMessage[],
+  content: string,
+  timestamp: number,
+  model?: string,
+): UIMessage[] {
+  if (!content.trim()) return messages
+
+  const last = messages[messages.length - 1]
+  if (last?.type === 'assistant_text') {
+    const merged: UIMessage = {
+      ...last,
+      content: last.content + content,
+      ...(model ?? last.model ? { model: model ?? last.model } : {}),
+    }
+    return [...messages.slice(0, -1), merged]
+  }
+
+  return [
+    ...messages,
+    {
+      id: nextId(),
+      type: 'assistant_text',
+      content,
+      timestamp,
+      ...(model ? { model } : {}),
+    },
+  ]
+}
 
 /** Helper: immutably update a specific session within the sessions record */
 function updateSessionIn(
@@ -181,6 +224,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       get().handleServerMessage(sessionId, msg)
     })
 
+    const runtimeSelection = useSessionRuntimeStore.getState().selections[sessionId]
+    if (runtimeSelection) {
+      wsManager.send(sessionId, { type: 'set_runtime_config', ...runtimeSelection })
+    }
+    if (!sessionId.startsWith('__') && !useTeamStore.getState().getMemberBySessionId(sessionId)) {
+      wsManager.send(sessionId, { type: 'prewarm_session' })
+    }
+
     get().loadHistory(sessionId)
     sessionsApi.getSlashCommands(sessionId)
       .then(({ commands }) => {
@@ -200,8 +251,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
     if (pendingDelta) {
-      const text = pendingDelta
-      pendingDelta = ''
+      const text = consumePendingDelta()
       set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, (sess) => ({ streamingText: sess.streamingText + text })) }))
     }
     wsManager.disconnect(sessionId)
@@ -241,20 +291,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         clearTimeout(flushTimer)
         flushTimer = null
       }
-      const bufferedDelta = pendingDelta
-      pendingDelta = ''
-      const pendingAssistantText = `${session.streamingText}${bufferedDelta}`.trim()
+      const bufferedDelta = consumePendingDelta()
+      const pendingAssistantText = `${session.streamingText}${bufferedDelta}`
 
-      const newMessages = pendingAssistantText
-        ? [
-            ...session.messages,
-            {
-              id: nextId(),
-              type: 'assistant_text' as const,
-              content: pendingAssistantText,
-              timestamp: Date.now(),
-            },
-          ]
+      const newMessages = pendingAssistantText.trim()
+        ? appendAssistantTextMessage(session.messages, pendingAssistantText, Date.now())
         : [...session.messages]
       if (!isMemberSession && allTasksDone) {
         newMessages.push({
@@ -348,6 +389,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }))
   },
 
+  setSessionRuntime: (sessionId, selection) => {
+    wsManager.send(sessionId, {
+      type: 'set_runtime_config',
+      ...selection,
+    })
+  },
+
   setSessionPermissionMode: (sessionId, mode) => {
     if (!get().sessions[sessionId]) return
     wsManager.send(sessionId, { type: 'set_permission_mode', mode })
@@ -357,8 +405,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     wsManager.send(sessionId, { type: 'stop_generation' })
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
     if (pendingDelta) {
-      const text = pendingDelta
-      pendingDelta = ''
+      const text = consumePendingDelta()
       set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, (sess) => ({ streamingText: sess.streamingText + text })) }))
     }
     set((s) => {
@@ -481,17 +528,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case 'status':
         update((session) => {
-          const pendingText = session.streamingText.trim()
-          const shouldFlush = pendingText && session.chatState === 'streaming' && msg.state !== 'streaming'
+          const pendingText = `${session.streamingText}${consumePendingDelta()}`
+          const hasPendingStreamText =
+            session.chatState === 'streaming' && pendingText.trim().length > 0
+          // Background task progress can arrive while the assistant is still
+          // streaming one markdown reply. Keep that turn intact so we do not
+          // split formatting markers (for example backticks/strong markers)
+          // across separate bubbles.
+          const preserveStreamingTurn = hasPendingStreamText && msg.state !== 'idle'
+          const shouldFlush = hasPendingStreamText && msg.state === 'idle'
           return {
-            chatState: msg.state,
+            chatState: preserveStreamingTurn ? 'streaming' : msg.state,
             ...(msg.verb && msg.verb !== 'Thinking' ? { statusVerb: msg.verb } : {}),
             ...(msg.tokens ? { tokenUsage: { ...session.tokenUsage, output_tokens: msg.tokens } } : {}),
             ...(msg.state === 'idle' ? { activeThinkingId: null, statusVerb: '' } : {}),
             ...(shouldFlush ? {
-              messages: [...session.messages, { id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() }],
+              messages: appendAssistantTextMessage(session.messages, pendingText, Date.now()),
               streamingText: '',
-            } : {}),
+            } : pendingText !== session.streamingText ? { streamingText: pendingText } : {}),
           }
         })
         if (msg.state === 'idle') {
@@ -508,15 +562,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case 'content_start': {
         const session = get().sessions[sessionId]
         if (!session) break
-        const pendingText = session.streamingText.trim()
-        if (pendingText) {
+        const pendingText = `${session.streamingText}${consumePendingDelta()}`
+        if (msg.blockType !== 'text' && pendingText.trim()) {
           update((s) => ({
-            messages: [...s.messages, { id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() }],
+            messages: appendAssistantTextMessage(s.messages, pendingText, Date.now()),
             streamingText: '',
           }))
         }
         if (msg.blockType === 'text') {
-          update(() => ({ streamingText: '', chatState: 'streaming', activeThinkingId: null }))
+          update((s) => ({
+            ...(pendingText !== s.streamingText ? { streamingText: pendingText } : {}),
+            chatState: 'streaming',
+            activeThinkingId: null,
+          }))
         } else if (msg.blockType === 'tool_use') {
           update(() => ({
             activeToolUseId: msg.toolUseId ?? null,
@@ -546,9 +604,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case 'thinking':
         update((s) => {
-          const pendingText = s.streamingText.trim()
-          const base = pendingText
-            ? [...s.messages, { id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() }]
+          const pendingText = `${s.streamingText}${consumePendingDelta()}`
+          const base = pendingText.trim()
+            ? appendAssistantTextMessage(s.messages, pendingText, Date.now())
             : s.messages
           const last = base[base.length - 1]
           if (last && last.type === 'thinking') {
@@ -643,12 +701,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case 'message_complete': {
         const session = get().sessions[sessionId]
         if (!session) break
-        const text = session.streamingText
-        if (text) {
+        const text = `${session.streamingText}${consumePendingDelta()}`
+        if (text.trim()) {
           update((s) => ({
-            messages: [...s.messages, { id: nextId(), type: 'assistant_text', content: text, timestamp: Date.now() }],
+            messages: appendAssistantTextMessage(s.messages, text, Date.now()),
             streamingText: '',
           }))
+        } else if (text !== session.streamingText) {
+          update(() => ({ streamingText: text }))
         }
         if (session.elapsedTimer) clearInterval(session.elapsedTimer)
         update(() => ({
@@ -664,12 +724,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case 'error':
         update((s) => {
-          const pendingText = s.streamingText.trim()
-          const newMessages = [...s.messages]
-          if (pendingText) {
-            newMessages.push({ id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() })
+          const pendingText = `${s.streamingText}${consumePendingDelta()}`
+          let newMessages = s.messages
+          if (pendingText.trim()) {
+            newMessages = appendAssistantTextMessage(newMessages, pendingText, Date.now())
           }
-          newMessages.push({ id: nextId(), type: 'error', message: msg.message, code: msg.code, timestamp: Date.now() })
+          newMessages = [...newMessages, { id: nextId(), type: 'error', message: msg.message, code: msg.code, timestamp: Date.now() }]
           return {
             messages: newMessages,
             chatState: 'idle',
@@ -791,6 +851,30 @@ function extractVisibleTeammateMessageContents(text: string): string[] {
   return contents
 }
 
+function pushAssistantHistoryText(
+  messages: UIMessage[],
+  content: string,
+  timestamp: number,
+  model?: string,
+): void {
+  if (!content.trim()) return
+
+  const last = messages[messages.length - 1]
+  if (last?.type === 'assistant_text') {
+    last.content += content
+    if (model && !last.model) last.model = model
+    return
+  }
+
+  messages.push({
+    id: nextId(),
+    type: 'assistant_text',
+    content,
+    timestamp,
+    ...(model ? { model } : {}),
+  })
+}
+
 type HistoryMappingOptions = {
   includeTeammateMessages?: boolean
 }
@@ -900,7 +984,7 @@ export function mapHistoryMessagesToUiMessages(
     if ((msg.type === 'assistant' || msg.type === 'tool_use') && Array.isArray(msg.content)) {
       for (const block of msg.content as AssistantHistoryBlock[]) {
         if (block.type === 'thinking' && block.thinking) uiMessages.push({ id: nextId(), type: 'thinking', content: block.thinking, timestamp })
-        else if (block.type === 'text' && block.text) uiMessages.push({ id: nextId(), type: 'assistant_text', content: block.text, timestamp, model: msg.model })
+        else if (block.type === 'text' && block.text) pushAssistantHistoryText(uiMessages, block.text, timestamp, msg.model)
         else if (block.type === 'tool_use') uiMessages.push({ id: nextId(), type: 'tool_use', toolName: block.name ?? 'unknown', toolUseId: block.id ?? '', input: block.input, timestamp, parentToolUseId: msg.parentToolUseId })
       }
       continue

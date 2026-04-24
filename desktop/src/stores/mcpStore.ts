@@ -9,17 +9,49 @@ type McpStore = {
   error: string | null
   fetchServers: (projectPaths?: string[], fallbackCwd?: string) => Promise<void>
   createServer: (name: string, payload: McpUpsertPayload, cwd?: string) => Promise<McpServerRecord>
-  updateServer: (name: string, payload: McpUpsertPayload, cwd?: string) => Promise<McpServerRecord>
-  deleteServer: (name: string, scope: string, cwd?: string) => Promise<void>
-  toggleServer: (name: string, cwd?: string) => Promise<McpServerRecord>
-  reconnectServer: (name: string, cwd?: string) => Promise<McpServerRecord>
+  updateServer: (server: McpServerRecord, payload: McpUpsertPayload, cwd?: string) => Promise<McpServerRecord>
+  deleteServer: (server: McpServerRecord, cwd?: string) => Promise<void>
+  toggleServer: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
+  reconnectServer: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
+  refreshServerStatus: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
   selectServer: (server: McpServerRecord | null) => void
 }
 
-function upsertByName(servers: McpServerRecord[], server: McpServerRecord) {
-  const index = servers.findIndex((item) => item.name === server.name)
-  if (index === -1) return [...servers, server]
-  return servers.map((item, itemIndex) => (itemIndex === index ? server : item))
+function isProjectScoped(server: Pick<McpServerRecord, 'scope'>) {
+  return server.scope === 'local' || server.scope === 'project'
+}
+
+function attachProjectPath(server: McpServerRecord, cwd?: string) {
+  if (!isProjectScoped(server)) {
+    return {
+      ...server,
+      projectPath: undefined,
+    }
+  }
+
+  return {
+    ...server,
+    projectPath: cwd ?? server.projectPath,
+  }
+}
+
+function isSameServer(a: Pick<McpServerRecord, 'name' | 'scope' | 'projectPath'>, b: Pick<McpServerRecord, 'name' | 'scope' | 'projectPath'>) {
+  if (a.name !== b.name || a.scope !== b.scope) return false
+  if (!isProjectScoped(a) && !isProjectScoped(b)) return true
+  return (a.projectPath ?? '') === (b.projectPath ?? '')
+}
+
+function replaceServer(
+  servers: McpServerRecord[],
+  previous: Pick<McpServerRecord, 'name' | 'scope' | 'projectPath'>,
+  next: McpServerRecord,
+  cwd?: string,
+) {
+  const normalizedNext = attachProjectPath(next, cwd)
+  const index = servers.findIndex((item) => isSameServer(item, previous))
+  if (index === -1) return [...servers, normalizedNext]
+
+  return servers.map((item, itemIndex) => (itemIndex === index ? normalizedNext : item))
 }
 
 export const useMcpStore = create<McpStore>((set) => ({
@@ -68,57 +100,69 @@ export const useMcpStore = create<McpStore>((set) => ({
 
   createServer: async (name, payload, cwd) => {
     const response = await mcpApi.create(name, payload, cwd)
+    const created = attachProjectPath(response.server, cwd)
     set((state) => ({
-      servers: [...state.servers, response.server],
-      selectedServer: response.server,
+      servers: [...state.servers, created],
+      selectedServer: created,
       error: null,
     }))
-    return response.server
+    return created
   },
 
-  updateServer: async (name, payload, cwd) => {
-    const response = await mcpApi.update(name, payload, cwd)
+  updateServer: async (server, payload, cwd) => {
+    const response = await mcpApi.update(server.name, payload, cwd)
+    const updated = attachProjectPath(response.server, cwd ?? server.projectPath)
     set((state) => ({
-      servers: upsertByName(
-        state.servers.filter((server) => server.name !== name),
-        response.server,
-      ),
-      selectedServer: response.server,
+      servers: replaceServer(state.servers, server, updated, cwd ?? server.projectPath),
+      selectedServer: state.selectedServer && isSameServer(state.selectedServer, server) ? updated : state.selectedServer,
       error: null,
     }))
-    return response.server
+    return updated
   },
 
-  deleteServer: async (name, scope, cwd) => {
-    await mcpApi.remove(name, scope, cwd)
+  deleteServer: async (server, cwd) => {
+    await mcpApi.remove(server.name, server.scope, cwd)
     set((state) => ({
-      servers: state.servers.filter((server) => !(server.name === name && server.scope === scope && (server.projectPath ?? '') === (cwd ?? ''))),
+      servers: state.servers.filter((item) => !isSameServer(item, server)),
       selectedServer:
-        state.selectedServer?.name === name && state.selectedServer?.scope === scope
+        state.selectedServer && isSameServer(state.selectedServer, server)
           ? null
           : state.selectedServer,
       error: null,
     }))
   },
 
-  toggleServer: async (name, cwd) => {
-    const response = await mcpApi.toggle(name, cwd)
+  toggleServer: async (server, cwd) => {
+    const response = await mcpApi.toggle(server.name, cwd)
+    const updated = attachProjectPath(response.server, cwd ?? server.projectPath)
     set((state) => ({
-      servers: upsertByName(state.servers, response.server),
-      selectedServer: state.selectedServer?.name === name ? response.server : state.selectedServer,
+      servers: replaceServer(state.servers, server, updated, cwd ?? server.projectPath),
+      selectedServer: state.selectedServer && isSameServer(state.selectedServer, server) ? updated : state.selectedServer,
       error: null,
     }))
-    return response.server
+    return updated
   },
 
-  reconnectServer: async (name, cwd) => {
-    const response = await mcpApi.reconnect(name, cwd)
+  reconnectServer: async (server, cwd) => {
+    const response = await mcpApi.reconnect(server.name, cwd)
+    const updated = attachProjectPath(response.server, cwd ?? server.projectPath)
     set((state) => ({
-      servers: upsertByName(state.servers, response.server),
-      selectedServer: state.selectedServer?.name === name ? response.server : state.selectedServer,
+      servers: replaceServer(state.servers, server, updated, cwd ?? server.projectPath),
+      selectedServer: state.selectedServer && isSameServer(state.selectedServer, server) ? updated : state.selectedServer,
       error: null,
     }))
-    return response.server
+    return updated
+  },
+
+  refreshServerStatus: async (server, cwd) => {
+    const response = await mcpApi.status(server.name, cwd)
+    const updated = attachProjectPath(response.server, cwd ?? server.projectPath)
+    set((state) => ({
+      servers: replaceServer(state.servers, server, updated, cwd ?? server.projectPath),
+      selectedServer: state.selectedServer && isSameServer(state.selectedServer, server) ? updated : state.selectedServer,
+      error: null,
+    }))
+    return updated
   },
 
   selectServer: (server) => set({ selectedServer: server }),
