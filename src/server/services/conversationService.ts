@@ -477,6 +477,17 @@ export class ConversationService {
 
     const activeSession = this.sessions.get(sessionId)
     if (activeSession?.proc === proc) {
+      const exitError = this.buildRuntimeExitMessage(sessionId, code)
+      for (const cb of activeSession.outputCallbacks) {
+        cb({
+          type: 'result',
+          subtype: 'error',
+          is_error: true,
+          result: exitError,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          session_id: sessionId,
+        })
+      }
       this.sessions.delete(sessionId)
     }
   }
@@ -781,6 +792,26 @@ export class ConversationService {
       'CLI_START_FAILED',
       true,
     )
+  }
+
+  private buildRuntimeExitMessage(sessionId: string, exitCode: number): string {
+    const session = this.sessions.get(sessionId)
+    const stderrText = session?.stderrLines.join('\n').trim() ?? ''
+    const recentMessages = session?.sdkMessages ?? []
+    const resultMessage = [...recentMessages]
+      .reverse()
+      .find((msg) => msg?.type === 'result' && msg.is_error)
+    const authStatus = [...recentMessages]
+      .reverse()
+      .find((msg) => msg?.type === 'auth_status')
+    const detail =
+      this.extractStartupDetail(resultMessage) ||
+      this.extractStartupDetail(authStatus) ||
+      stderrText
+
+    return detail
+      ? `CLI process exited unexpectedly (code ${exitCode}): ${detail}`
+      : `CLI process exited unexpectedly with code ${exitCode}.`
   }
 
   private extractStartupDetail(message: any): string {

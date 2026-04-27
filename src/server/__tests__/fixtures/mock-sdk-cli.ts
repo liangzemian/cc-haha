@@ -26,7 +26,10 @@ const sdkUrl = getArg('--sdk-url')
 const sessionId = getArg('--session-id') || crypto.randomUUID()
 const initMode = process.env.MOCK_SDK_INIT_MODE || 'on_open'
 const streamDelayMs = Number(process.env.MOCK_SDK_STREAM_DELAY_MS || '0')
+const exitAfterOpenMs = Number(process.env.MOCK_SDK_EXIT_AFTER_OPEN_MS || '0')
+const exitAfterFirstUserMs = Number(process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS || '0')
 let initSent = false
+let firstUserExitScheduled = false
 
 if (!sdkUrl) {
   console.error('Missing --sdk-url')
@@ -51,6 +54,9 @@ ws.addEventListener('open', () => {
   if (initMode !== 'on_first_user') {
     sendInit()
   }
+  if (exitAfterOpenMs > 0) {
+    setTimeout(() => process.exit(1), exitAfterOpenMs)
+  }
 })
 
 ws.addEventListener('message', (event) => {
@@ -63,6 +69,11 @@ ws.addEventListener('message', (event) => {
 
       if (parsed.type === 'user') {
         sendInit()
+        if (exitAfterFirstUserMs > 0 && !firstUserExitScheduled) {
+          firstUserExitScheduled = true
+          setTimeout(() => process.exit(1), exitAfterFirstUserMs)
+          continue
+        }
         const text = extractUserText(parsed)
         emit(ws, {
           type: 'stream_event',

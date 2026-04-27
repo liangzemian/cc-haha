@@ -235,6 +235,29 @@ describe('WebSocket Chat Integration', () => {
     }
   }
 
+  async function withMockExitAfterFirstUser<T>(
+    delayMs: number | undefined,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    const previousDelay = process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS
+
+    if (delayMs && delayMs > 0) {
+      process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS = String(delayMs)
+    } else {
+      delete process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS
+    }
+
+    try {
+      return await callback()
+    } finally {
+      if (previousDelay === undefined) {
+        delete process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS
+      } else {
+        process.env.MOCK_SDK_EXIT_AFTER_FIRST_USER_MS = previousDelay
+      }
+    }
+  }
+
   async function runTurn(sessionId: string, content: string, allowError = false): Promise<any[]> {
     const messages: any[] = []
     const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
@@ -259,6 +282,39 @@ describe('WebSocket Chat Integration', () => {
           } else {
             reject(new Error(msg.message))
           }
+        }
+        if (msg.type === 'message_complete') {
+          clearTimeout(timeout)
+          ws.close()
+          resolve()
+        }
+      }
+
+      ws.onerror = () => {
+        clearTimeout(timeout)
+        ws.close()
+        reject(new Error(`WebSocket error for session ${sessionId}`))
+      }
+    })
+
+    return messages
+  }
+
+  async function runTurnUntilComplete(sessionId: string, content: string): Promise<any[]> {
+    const messages: any[] = []
+    const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ws.close()
+        reject(new Error(`Timed out waiting for terminal event for session ${sessionId}`))
+      }, 10000)
+
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data as string)
+        messages.push(msg)
+        if (msg.type === 'connected') {
+          ws.send(JSON.stringify({ type: 'user_message', content }))
         }
         if (msg.type === 'message_complete') {
           clearTimeout(timeout)
@@ -433,6 +489,24 @@ describe('WebSocket Chat Integration', () => {
       ),
     ).toBe(true)
   })
+
+  it('should complete the client turn when the CLI exits after startup', async () => {
+    const messages = await withMockExitAfterFirstUser(50, () =>
+      runTurnUntilComplete(`chat-late-exit-${crypto.randomUUID()}`, 'trigger late exit'),
+    )
+
+    expect(
+      messages.some(
+        (m) =>
+          m.type === 'error' &&
+          m.code === 'CLI_ERROR' &&
+          typeof m.message === 'string' &&
+          m.message.includes('CLI process exited unexpectedly'),
+      ),
+    ).toBe(true)
+    expect(messages.some((m) => m.type === 'message_complete')).toBe(true)
+    expect(messages.at(-1)?.type).toBe('message_complete')
+  }, 15_000)
 
   it('should handle permission_response without error', async () => {
     const messages: any[] = []
