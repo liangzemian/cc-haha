@@ -768,6 +768,44 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         if (msg.subtype === 'slash_commands' && Array.isArray(msg.data)) {
           update(() => ({ slashCommands: msg.data as Array<{ name: string; description: string }> }))
         }
+        if (msg.subtype === 'session_cleared') {
+          const session = get().sessions[sessionId]
+          if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
+          update(() => ({
+            messages: [],
+            streamingText: '',
+            streamingToolInput: '',
+            activeToolUseId: null,
+            activeToolName: null,
+            activeThinkingId: null,
+            pendingPermission: null,
+            pendingComputerUsePermission: null,
+            chatState: 'idle',
+            elapsedTimer: null,
+            elapsedSeconds: 0,
+            statusVerb: '',
+            tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          }))
+          useCLITaskStore.getState().clearTasks()
+          useSessionStore.getState().updateSessionTitle(sessionId, 'New Session')
+          useTabStore.getState().updateTabTitle(sessionId, 'New Session')
+          useTabStore.getState().updateTabStatus(sessionId, 'idle')
+        }
+        if (msg.subtype === 'compact_boundary') {
+          update((session) => ({
+            messages: [
+              ...session.messages,
+              {
+                id: nextId(),
+                type: 'system',
+                content: typeof msg.message === 'string' && msg.message.trim()
+                  ? msg.message
+                  : 'Context compacted',
+                timestamp: Date.now(),
+              },
+            ],
+          }))
+        }
         if (msg.subtype === 'task_notification' && msg.data && typeof msg.data === 'object') {
           const data = msg.data as Record<string, unknown>
           const toolUseId =

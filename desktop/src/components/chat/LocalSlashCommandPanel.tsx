@@ -8,12 +8,14 @@ import { useMcpStore } from '../../stores/mcpStore'
 import { useSkillStore } from '../../stores/skillStore'
 import type { McpServerRecord } from '../../types/mcp'
 import type { SkillMeta } from '../../types/skill'
+import type { SlashCommandOption } from './composerUtils'
 
-export type LocalSlashCommandName = 'mcp' | 'skills'
+export type LocalSlashCommandName = 'mcp' | 'skills' | 'help'
 
 type Props = {
   command: LocalSlashCommandName
   cwd?: string
+  commands?: SlashCommandOption[]
   onClose: () => void
 }
 
@@ -283,7 +285,85 @@ function SkillsPanel({ cwd, onClose }: { cwd?: string; onClose: () => void }) {
   )
 }
 
-export function LocalSlashCommandPanel({ command, cwd, onClose }: Props) {
+const COMMAND_GROUPS = [
+  {
+    title: 'Context',
+    names: ['clear', 'compact', 'context', 'cost'],
+  },
+  {
+    title: 'Project',
+    names: ['init', 'review', 'commit', 'pr'],
+  },
+  {
+    title: 'Desktop',
+    names: ['mcp', 'skills', 'plugin', 'help'],
+  },
+]
+
+function HelpPanel({
+  commands,
+  onClose,
+}: {
+  commands?: SlashCommandOption[]
+  onClose: () => void
+}) {
+  const commandMap = useMemo(() => {
+    const map = new Map<string, SlashCommandOption>()
+    for (const command of commands ?? []) {
+      map.set(command.name, command)
+    }
+    return map
+  }, [commands])
+
+  const groupedNames = new Set(COMMAND_GROUPS.flatMap((group) => group.names))
+  const otherCommands = (commands ?? [])
+    .filter((command) => !groupedNames.has(command.name))
+    .slice(0, 12)
+
+  const renderCommand = (command: SlashCommandOption) => (
+    <div key={command.name} className="flex min-w-0 items-start gap-3 border-t border-[var(--color-border)] px-4 py-3 first:border-t-0">
+      <div className="shrink-0 font-mono text-sm font-semibold text-[var(--color-text-primary)]">/{command.name}</div>
+      <div className="min-w-0 flex-1 text-xs leading-5 text-[var(--color-text-tertiary)]">{command.description}</div>
+    </div>
+  )
+
+  return (
+    <PanelShell
+      title="Slash commands"
+      subtitle="Run agent workflows, inspect session state, or open desktop panels."
+      onClose={onClose}
+    >
+      <div className="space-y-4">
+        {COMMAND_GROUPS.map((group) => {
+          const entries = group.names
+            .map((name) => commandMap.get(name))
+            .filter((command): command is SlashCommandOption => Boolean(command))
+          if (entries.length === 0) return null
+          return (
+            <section key={group.title}>
+              <div className="mb-2 text-sm font-semibold text-[var(--color-text-primary)]">{group.title}</div>
+              <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+                {entries.map(renderCommand)}
+              </div>
+            </section>
+          )
+        })}
+
+        {otherCommands.length > 0 && (
+          <section>
+            <div className="mb-2 text-sm font-semibold text-[var(--color-text-primary)]">More</div>
+            <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]">
+              {otherCommands.map(renderCommand)}
+            </div>
+          </section>
+        )}
+      </div>
+    </PanelShell>
+  )
+}
+
+export function LocalSlashCommandPanel({ command, cwd, commands, onClose }: Props) {
   if (command === 'mcp') return <McpPanel cwd={cwd} onClose={onClose} />
-  return <SkillsPanel cwd={cwd} onClose={onClose} />
+  if (command === 'skills') return <SkillsPanel cwd={cwd} onClose={onClose} />
+  return <HelpPanel commands={commands} onClose={onClose} />
 }

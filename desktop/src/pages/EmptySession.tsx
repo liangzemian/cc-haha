@@ -153,15 +153,20 @@ export function EmptySession() {
     }
   }, [workDir])
 
+  const allSlashCommands = useMemo(
+    () => mergeSlashCommands(slashCommands, FALLBACK_SLASH_COMMANDS),
+    [slashCommands],
+  )
+
   const filteredCommands = useMemo(() => {
-    const source = mergeSlashCommands(slashCommands, FALLBACK_SLASH_COMMANDS)
+    const source = allSlashCommands
     if (!slashFilter) return source
     const lower = slashFilter.toLowerCase()
     return source.filter((command) => (
       command.name.toLowerCase().includes(lower) ||
       command.description.toLowerCase().includes(lower)
     ))
-  }, [slashCommands, slashFilter])
+  }, [allSlashCommands, slashFilter])
 
   const exactSlashCommand = useMemo(() => {
     const normalized = slashFilter.trim().toLowerCase()
@@ -501,6 +506,7 @@ export function EmptySession() {
                 <LocalSlashCommandPanel
                   command={localSlashPanel}
                   cwd={workDir || undefined}
+                  commands={allSlashCommands}
                   onClose={() => setLocalSlashPanel(null)}
                 />
               </div>

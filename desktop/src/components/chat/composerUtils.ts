@@ -3,11 +3,15 @@ import type { SettingsTab } from '../../stores/uiStore'
 export const PANEL_SLASH_COMMANDS = [
   { name: 'mcp', description: 'Open available MCP tools for the current chat context' },
   { name: 'skills', description: 'Browse user-invocable skills for the current chat context' },
+  { name: 'help', description: 'Show available desktop and agent commands' },
 ] as const
 
 export const SETTINGS_SLASH_COMMANDS = [
   { name: 'plugin', description: 'Open desktop plugin controls in Settings', tab: 'plugins' as const },
-  { name: 'plugins', description: 'Open desktop plugin controls in Settings', tab: 'plugins' as const },
+] as const
+
+export const SLASH_COMMAND_ALIASES = [
+  { name: 'plugins', target: 'plugin' },
 ] as const
 
 export const FALLBACK_SLASH_COMMANDS = [
@@ -15,13 +19,13 @@ export const FALLBACK_SLASH_COMMANDS = [
   ...SETTINGS_SLASH_COMMANDS.map(({ name, description }) => ({ name, description })),
   { name: 'compact', description: 'Compact conversation context' },
   { name: 'clear', description: 'Clear conversation history' },
-  { name: 'help', description: 'Show available commands' },
   { name: 'review', description: 'Review code changes' },
   { name: 'commit', description: 'Create a git commit' },
   { name: 'pr', description: 'Create a pull request' },
   { name: 'init', description: 'Initialize project CLAUDE.md' },
   { name: 'bug', description: 'Report a bug' },
   { name: 'config', description: 'Open configuration' },
+  { name: 'context', description: 'Show current context usage' },
   { name: 'cost', description: 'Show token usage and costs' },
   { name: 'doctor', description: 'Diagnose installation issues' },
   { name: 'login', description: 'Switch Anthropic accounts' },
@@ -50,12 +54,13 @@ export type SlashUiAction =
     }
 
 export function resolveSlashUiAction(value: string): SlashUiAction | null {
-  const panelCommand = PANEL_SLASH_COMMANDS.find((command) => command.name === value)
+  const normalizedValue = SLASH_COMMAND_ALIASES.find((alias) => alias.name === value)?.target ?? value
+  const panelCommand = PANEL_SLASH_COMMANDS.find((command) => command.name === normalizedValue)
   if (panelCommand) {
     return { type: 'panel', command: panelCommand.name }
   }
 
-  const settingsCommand = SETTINGS_SLASH_COMMANDS.find((command) => command.name === value)
+  const settingsCommand = SETTINGS_SLASH_COMMANDS.find((command) => command.name === normalizedValue)
   if (settingsCommand) {
     return { type: 'settings', tab: settingsCommand.tab }
   }

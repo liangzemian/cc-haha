@@ -18,6 +18,11 @@ import { sessionService } from '../services/sessionService.js'
 import { SettingsService } from '../services/settingsService.js'
 import { ProviderService } from '../services/providerService.js'
 import { deriveTitle, generateTitle, saveAiTitle } from '../services/titleService.js'
+import { parseSlashCommand } from '../../utils/slashCommandParsing.js'
+import {
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+} from '../../constants/xml.js'
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
@@ -214,6 +219,11 @@ async function handleUserMessage(
   sessionStopRequested.delete(sessionId)
   clearPrewarmState(sessionId)
 
+  if (getDesktopSlashCommandName(message.content) === 'clear') {
+    await handleDesktopClearCommand(ws)
+    return
+  }
+
   // Send thinking status
   sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
 
@@ -290,6 +300,42 @@ async function handleUserMessage(
   }
 
   userMessageSent = true
+}
+
+async function handleDesktopClearCommand(
+  ws: ServerWebSocket<WebSocketData>,
+) {
+  const { sessionId } = ws.data
+
+  const workDir = conversationService.getSessionWorkDir(sessionId)
+  conversationService.stopSession(sessionId)
+  conversationService.clearOutputCallbacks(sessionId)
+  sessionSlashCommands.delete(sessionId)
+  sessionTitleState.delete(sessionId)
+  cleanupStreamState(sessionId)
+
+  try {
+    await sessionService.clearSessionTranscript(sessionId, workDir || undefined)
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    sendMessage(ws, {
+      type: 'error',
+      message: errMsg,
+      code: 'SESSION_CLEAR_FAILED',
+    })
+    sendMessage(ws, { type: 'status', state: 'idle' })
+    return
+  }
+
+  sendMessage(ws, {
+    type: 'system_notification',
+    subtype: 'session_cleared',
+    message: 'Conversation cleared',
+  })
+  sendMessage(ws, {
+    type: 'message_complete',
+    usage: { input_tokens: 0, output_tokens: 0 },
+  })
 }
 
 function handlePrewarmSession(ws: ServerWebSocket<WebSocketData>) {
@@ -772,6 +818,14 @@ function translateCliMessage(cliMsg: any, sessionId: string): ServerMessage[] {
       // CLI 发送 type:'user' 消息，其中 content 包含 tool_result 块
       const messages: ServerMessage[] = []
 
+      const localCommandOutput = extractLocalCommandOutput(
+        cliMsg.message?.content,
+      )
+      if (localCommandOutput) {
+        messages.push({ type: 'content_start', blockType: 'text' })
+        messages.push({ type: 'content_delta', text: localCommandOutput })
+      }
+
       if (cliMsg.message?.content && Array.isArray(cliMsg.message.content)) {
         for (const block of cliMsg.message.content) {
           if (block.type === 'tool_result') {
@@ -1022,6 +1076,14 @@ function translateCliMessage(cliMsg: any, sessionId: string): ServerMessage[] {
           data: cliMsg,
         }]
       }
+      if (subtype === 'compact_boundary') {
+        return [{
+          type: 'system_notification',
+          subtype: 'compact_boundary',
+          message: 'Context compacted',
+          data: cliMsg.compact_metadata ?? cliMsg,
+        }]
+      }
       // 其他 system 消息
       return []
     }
@@ -1043,6 +1105,38 @@ function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage)
 
 function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: string) {
   sendMessage(ws, { type: 'error', message, code })
+}
+
+function getDesktopSlashCommandName(content: string): string | null {
+  const parsed = parseSlashCommand(content.trim())
+  return parsed?.commandName ?? null
+}
+
+function extractLocalCommandOutput(content: unknown): string | null {
+  const raw = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content
+        .flatMap((block) => {
+          if (!block || typeof block !== 'object') return []
+          const text = (block as { text?: unknown }).text
+          return typeof text === 'string' ? [text] : []
+        })
+        .join('\n')
+      : ''
+
+  if (!raw) return null
+
+  const stdout = extractTaggedContent(raw, LOCAL_COMMAND_STDOUT_TAG)
+  if (stdout !== null) return stdout
+
+  const stderr = extractTaggedContent(raw, LOCAL_COMMAND_STDERR_TAG)
+  return stderr
+}
+
+function extractTaggedContent(raw: string, tag: string): string | null {
+  const match = raw.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))
+  return match?.[1]?.trim() ?? null
 }
 
 function rebindSessionOutput(

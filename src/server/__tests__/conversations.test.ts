@@ -518,6 +518,32 @@ describe('WebSocket Chat Integration', () => {
     expect(secondTurn.some((m) => m.type === 'error')).toBe(false)
   })
 
+  it('should clear a desktop session without sending /clear to the CLI turn loop', async () => {
+    const createRes = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir: process.cwd() }),
+    })
+    expect(createRes.status).toBe(201)
+    const { sessionId } = await createRes.json() as { sessionId: string }
+
+    const firstTurn = await runTurn(sessionId, 'message before clear')
+    expect(firstTurn.some((m) => m.type === 'message_complete')).toBe(true)
+
+    const clearTurn = await runTurn(sessionId, '/clear')
+    expect(
+      clearTurn.some(
+        (m) => m.type === 'system_notification' && m.subtype === 'session_cleared',
+      ),
+    ).toBe(true)
+    expect(clearTurn.some((m) => m.type === 'content_delta')).toBe(false)
+
+    const messagesRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/messages`)
+    expect(messagesRes.status).toBe(200)
+    const body = await messagesRes.json() as { messages: unknown[] }
+    expect(body.messages).toEqual([])
+  })
+
   it('should prewarm the CLI before the first user turn and reuse that process', async () => {
     const createRes = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',

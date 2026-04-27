@@ -789,6 +789,50 @@ export class SessionService {
     await fs.unlink(found.filePath)
   }
 
+  async clearSessionTranscript(sessionId: string, fallbackWorkDir?: string): Promise<void> {
+    let found = await this.findSessionFile(sessionId)
+    if (!found && fallbackWorkDir) {
+      const absWorkDir = path.resolve(fallbackWorkDir)
+      const dirPath = path.join(this.getProjectsDir(), this.sanitizePath(absWorkDir))
+      await fs.mkdir(dirPath, { recursive: true })
+      found = {
+        filePath: path.join(dirPath, `${sessionId}.jsonl`),
+        projectDir: this.sanitizePath(absWorkDir),
+      }
+    }
+    if (!found) {
+      throw ApiError.notFound(`Session not found: ${sessionId}`)
+    }
+
+    const entries = await this.readJsonlFile(found.filePath)
+    const workDir = this.resolveWorkDirFromEntries(entries, found.projectDir) || fallbackWorkDir || process.cwd()
+    const now = new Date().toISOString()
+
+    const initialEntry = {
+      type: 'file-history-snapshot',
+      messageId: crypto.randomUUID(),
+      snapshot: {
+        messageId: crypto.randomUUID(),
+        trackedFileBackups: {},
+        timestamp: now,
+      },
+      isSnapshotUpdate: false,
+    }
+
+    const metaEntry = {
+      type: 'session-meta',
+      isMeta: true,
+      workDir,
+      timestamp: now,
+    }
+
+    await fs.writeFile(
+      found.filePath,
+      `${JSON.stringify(initialEntry)}\n${JSON.stringify(metaEntry)}\n`,
+      'utf-8',
+    )
+  }
+
   async appendSessionMetadata(
     sessionId: string,
     metadata: { workDir: string; customTitle?: string | null }
