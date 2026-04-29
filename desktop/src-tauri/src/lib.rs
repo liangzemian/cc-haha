@@ -15,16 +15,19 @@ use std::{
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-#[cfg(target_os = "macos")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Emitter;
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
 };
 
 const SERVER_STARTUP_LOG_LIMIT: usize = 80;
+const MAIN_WINDOW_LABEL: &str = "main";
+const TRAY_SHOW_ID: &str = "tray_show";
+const TRAY_QUIT_ID: &str = "tray_quit";
 
 #[derive(Default)]
 struct ServerState(Mutex<ServerStatus>);
@@ -38,6 +41,11 @@ struct ServerRuntime {
 struct ServerStatus {
     runtime: Option<ServerRuntime>,
     startup_error: Option<String>,
+}
+
+#[derive(Default)]
+struct AppExitState {
+    is_quitting: Mutex<bool>,
 }
 
 /// 与 ServerState 平级的 adapter 子进程状态。
@@ -116,6 +124,7 @@ fn restart_adapters_sidecar(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn prepare_for_update_install(app: AppHandle) -> Result<(), String> {
+    mark_app_quitting(&app);
     stop_server_sidecar(&app);
     stop_adapters_sidecar(&app);
 
@@ -127,6 +136,71 @@ fn prepare_for_update_install(app: AppHandle) -> Result<(), String> {
     // Give Windows a short moment to release executable file handles before the
     // updater starts replacing bundled sidecars in the install directory.
     std::thread::sleep(Duration::from_millis(750));
+    Ok(())
+}
+
+fn mark_app_quitting(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppExitState>() {
+        if let Ok(mut is_quitting) = state.is_quitting.lock() {
+            *is_quitting = true;
+        }
+    }
+}
+
+fn should_hide_to_tray(app: &AppHandle, label: &str) -> bool {
+    if label != MAIN_WINDOW_LABEL {
+        return false;
+    }
+
+    app.try_state::<AppExitState>()
+        .and_then(|state| state.is_quitting.lock().ok().map(|value| !*value))
+        .unwrap_or(true)
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn setup_system_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let menu = MenuBuilder::new(app)
+        .text(TRAY_SHOW_ID, "Show Claude Code Haha")
+        .separator()
+        .text(TRAY_QUIT_ID, "Quit Claude Code Haha")
+        .build()?;
+
+    let mut tray = TrayIconBuilder::with_id("main-tray")
+        .tooltip("Claude Code Haha")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => show_main_window(app),
+            TRAY_QUIT_ID => {
+                mark_app_quitting(app);
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+
+    tray.build(app)?;
+
     Ok(())
 }
 
@@ -892,6 +966,7 @@ pub fn run() {
         .manage(ServerState::default())
         .manage(AdapterState::default())
         .manage(TerminalState::default())
+        .manage(AppExitState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
@@ -967,6 +1042,8 @@ pub fn run() {
 
     let app = builder
         .setup(|app| {
+            setup_system_tray(app)?;
+
             let state = app.state::<ServerState>();
             let mut guard = state
                 .0
@@ -996,10 +1073,34 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        if matches!(event, RunEvent::Exit | RunEvent::ExitRequested { .. }) {
+    app.run(|app_handle, event| match event {
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::CloseRequested { api, .. },
+            ..
+        } if should_hide_to_tray(app_handle, &label) => {
+            api.prevent_close();
+            if let Some(window) = app_handle.get_webview_window(&label) {
+                let _ = window.hide();
+            }
+        }
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } => {
+            show_main_window(app_handle);
+        }
+        RunEvent::ExitRequested { .. } => {
+            mark_app_quitting(app_handle);
             stop_server_sidecar(app_handle);
             stop_adapters_sidecar(app_handle);
         }
+        RunEvent::Exit => {
+            mark_app_quitting(app_handle);
+            stop_server_sidecar(app_handle);
+            stop_adapters_sidecar(app_handle);
+        }
+        _ => {}
     });
 }
